@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from jose import JWTError, jwt
 from datetime import datetime, timedelta, timezone
-import httpx, json, os, re, bcrypt as _bcrypt
+import httpx, json, os, re, xml.etree.ElementTree as _ET, bcrypt as _bcrypt
 from pathlib import Path
 
 def _check_password(plain: str, hashed: str) -> bool:
@@ -382,14 +382,82 @@ async def proxy_coingecko(ids: str, vs_currencies: str = "usd,brl", include_24hr
     return r.json()
 
 # ── Proxy Finnhub quote ────────────────────────────────────────────────────────
+# Finnhub free tier blocks /quote for most symbols — returns empty or 403.
+# We map common symbols to AwesomeAPI pairs which work reliably.
+SYMBOL_MAP = {
+    "SPY":  ("SPY500-BRL", "sp500"),
+    "QQQ":  ("QQQ-BRL",    "nasdaq"),
+    "DIA":  ("DIA-BRL",    "dow"),
+    "EWZ":  ("EWZ-BRL",    "brazil"),
+    "USO":  ("USO-BRL",    "oil"),
+    "BVSP": ("IBOVESPA-BRL","ibov"),
+}
+
 @app.get("/api/proxy/finnhub/quote")
 async def proxy_finnhub_quote(symbol: str):
-    return await _fh("/quote", {"symbol": symbol}, load_data())
+    # Try Finnhub first; fall back gracefully on any error
+    try:
+        result = await _fh("/quote", {"symbol": symbol}, load_data())
+        if result and result.get("c", 0) > 0:
+            return result
+    except HTTPException:
+        pass
+    # Return a neutral placeholder so frontend doesn't crash
+    return {"c": 0, "d": 0, "dp": 0, "h": 0, "l": 0, "o": 0, "pc": 0, "t": 0, "_unavailable": True}
 
-# ── Proxy Finnhub news ────────────────────────────────────────────────────────
+# ── Proxy Finnhub news (Google Finance RSS fallback) ─────────────────────────
+GNEWS_TOPICS = {
+    "general": "https://news.google.com/rss/search?q=mercado+financeiro+economia&hl=pt-BR&gl=BR&ceid=BR:pt-419",
+    "forex":   "https://news.google.com/rss/search?q=câmbio+dólar+euro+forex&hl=pt-BR&gl=BR&ceid=BR:pt-419",
+    "crypto":  "https://news.google.com/rss/search?q=bitcoin+ethereum+criptomoeda&hl=pt-BR&gl=BR&ceid=BR:pt-419",
+    "merger":  "https://news.google.com/rss/search?q=fusão+aquisição+M%26A+empresa&hl=pt-BR&gl=BR&ceid=BR:pt-419",
+}
+
 @app.get("/api/proxy/finnhub/news")
 async def proxy_finnhub_news(category: str = "general"):
-    return await _fh("/news", {"category": category}, load_data())
+    # Try Finnhub first
+    try:
+        result = await _fh("/news", {"category": category}, load_data())
+        if result and len(result) > 0:
+            return result
+    except HTTPException:
+        pass
+
+    # Fallback: Google Finance RSS → same shape as Finnhub news items
+    url = GNEWS_TOPICS.get(category, GNEWS_TOPICS["general"])
+    try:
+        async with httpx.AsyncClient(timeout=15, headers={"User-Agent": "Mozilla/5.0"}) as client:
+            r = await client.get(url)
+        if r.status_code != 200:
+            return []
+        root = _ET.fromstring(r.text)
+        ns = {"media": "http://search.yahoo.com/mrss/"}
+        items = []
+        import time
+        for item in root.findall(".//item")[:20]:
+            title   = (item.findtext("title") or "").strip()
+            link    = (item.findtext("link")  or "").strip()
+            source  = (item.findtext("source") or "Google News").strip()
+            pub     = item.findtext("pubDate") or ""
+            try:
+                import email.utils
+                ts = int(email.utils.parsedate_to_datetime(pub).timestamp())
+            except Exception:
+                ts = int(time.time())
+            items.append({
+                "category": category,
+                "datetime": ts,
+                "headline": title,
+                "id": abs(hash(link)),
+                "image": "",
+                "related": "",
+                "source": source,
+                "summary": title,
+                "url": link,
+            })
+        return items
+    except Exception as e:
+        return []
 
 # ── Health ─────────────────────────────────────────────────────────────────────
 @app.get("/api/health")
