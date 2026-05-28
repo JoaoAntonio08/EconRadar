@@ -9,9 +9,13 @@
     "note": "",
     "interests": [
       "usd",
+      "eur",
       "xau",
       "btc",
-      "spy"
+      "spy",
+      "ibov",
+      "qqq",
+      "jpy"
     ],
     "alerts_seen": 0,
     "ai_used": true,
@@ -33,24 +37,6 @@
   },
   "chat_sessions": [
     {
-      "id": 1,
-      "title": "Como a tensão EUA-Irã afeta a prata?",
-      "messages": [
-        {
-          "role": "user",
-          "content": "Como a tensão EUA-Irã afeta a prata?",
-          "created_at": "2026-05-26T22:31:12.410216"
-        },
-        {
-          "role": "assistant",
-          "content": "(resposta não disponível)",
-          "created_at": "2026-05-26T22:31:12.410216"
-        }
-      ],
-      "created_at": "2026-05-26T22:31:05.771066",
-      "updated_at": "2026-05-26T22:31:12.410216"
-    },
-    {
       "id": 2,
       "title": "Como a tensão EUA-Irã afeta a prata?",
       "messages": [
@@ -69,7 +55,23 @@
       "updated_at": "2026-05-27T09:29:03.551062"
     }
   ],
-  "night_summaries": [],
+  "night_summaries": [
+    {
+      "summary_text": "O mercado de criptomoedas registrou queda generalizada nesta sessão, com Bitcoin, Ethereum e Solana liderando as perdas. A pressão vendedora se intensificou após a consolidação em torno de níveis de resistência, enquanto o volume de negociação permaneceu moderado.",
+      "instab_score": 0,
+      "generated_at": "2026-05-27T22:42:01.404846"
+    },
+    {
+      "summary_text": "O dólar avançou 0,56%, enquanto o ouro e a prata caíram 1,66% e 4,64%, respectivamente. As criptomoedas lideraram as quedas, com Bitcoin, Ethereum e Solana registrando perdas superiores a 1%.",
+      "instab_score": 0,
+      "generated_at": "2026-05-27T22:42:16.355603"
+    },
+    {
+      "summary_text": "O ouro recuou 1,60% e a prata caiu 4,50%, enquanto o dólar avançou 0,56% e as principais criptomoedas fecharam em baixa, com Bitcoin e Ethereum ambos abaixo de 2%. Moedas como o euro e o iene mostraram leve alta, mas o movimento dominante foi a desvalorização dos metais preciosos e dos ativos digitais.",
+      "instab_score": 0,
+      "generated_at": "2026-05-27T22:45:01.135188"
+    }
+  ],
   "api_keys": {
     "finnhub": "d87jkq1r01qmhakg2qrgd87jkq1r01qmhakg2qs0",
     "openrouter": "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"
