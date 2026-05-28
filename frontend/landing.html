@@ -59,17 +59,7 @@ body{
 #cursor.hovering{width:48px;height:48px;border-color:var(--green);background:rgba(0,232,122,.08)}
 #cursor.on-dark-btn{width:64px;height:64px;border-color:var(--gold);background:rgba(201,168,76,.06)}
 
-/* ── Chart Cursor Reveal ───────────────────────────────────────── */
-#chart-reveal{
-  position:fixed;z-index:9997;pointer-events:none;
-  width:200px;height:120px;
-  transform:translate(-50%,-50%);
-  opacity:0;
-  transition:opacity .3s;
-  filter:drop-shadow(0 0 24px rgba(0,232,122,.4));
-}
-#chart-reveal.visible{opacity:1}
-#chart-reveal svg{width:100%;height:100%}
+
 
 /* ── Noise Texture Overlay ─────────────────────────────────────── */
 body::before{
@@ -237,34 +227,6 @@ section{
 }
 
 /* ── Stats bar ─────────────────────────────────────────────────── */
-
-/* ── Hero Chart Spotlight (from landings.html) ─────────────────── */
-/*
-  The investment chart exists as a full background layer
-  that is *revealed* through a circular spotlight wherever the mouse is.
-*/
-#hero-chart-bg{
-  position:absolute;inset:0;z-index:1;pointer-events:none;
-  opacity:0;
-  transition:opacity .5s ease;
-}
-#hero-chart-bg.active{opacity:1}
-
-/* The SVG chart fills the right half of the hero */
-#hero-chart-bg svg{
-  position:absolute;
-  right:0;top:0;
-  width:60%;height:100%;
-}
-
-/* Spotlight mask */
-#hero-spotlight{
-  position:absolute;inset:0;z-index:1;pointer-events:none;
-  background:transparent;
-  opacity:0;
-  transition:opacity .4s;
-}
-#hero-spotlight.active{opacity:1}
 
 
 .hero-stats{
@@ -526,8 +488,12 @@ footer{
   .plans{grid-template-columns:1fr}
   .footer-top{flex-direction:column}
   .nav-links{display:none}
-  #chart-reveal{display:none}
 }
+
+/* ── Hero Chart Spotlight ──────────────────────────────────────── */
+#hero-chart-bg{position:absolute;inset:0;z-index:1;pointer-events:none;opacity:0;transition:opacity .5s}
+#hero-chart-bg.active{opacity:1}
+#hero-chart-bg svg{position:absolute;right:0;top:0;width:60%;height:100%}
 </style>
 </head>
 <body>
@@ -535,13 +501,6 @@ footer{
 <!-- Custom cursor -->
 <div id="cursor"></div>
 <div id="cursor-trail"></div>
-
-<!-- Chart cursor reveal -->
-<div id="chart-reveal">
-  <svg viewBox="0 0 200 120" xmlns="http://www.w3.org/2000/svg" id="candlestick-svg">
-    <!-- candles filled by JS -->
-  </svg>
-</div>
 
 <!-- Navigation -->
 <nav id="navbar">
@@ -565,14 +524,10 @@ footer{
   <div class="hero-grid"></div>
   <div class="hero-orb"></div>
 
-  <!-- Investment chart background layer — revealed by spotlight -->
+  <!-- Investment chart background — revealed by spotlight on mouse -->
   <div id="hero-chart-bg">
-    <svg id="hero-chart-svg" viewBox="0 0 900 700" preserveAspectRatio="xMaxYMid slice" xmlns="http://www.w3.org/2000/svg">
-      <!-- Built by JS -->
-    </svg>
+    <svg id="hero-chart-svg" viewBox="0 0 900 700" preserveAspectRatio="xMaxYMid slice" xmlns="http://www.w3.org/2000/svg"></svg>
   </div>
-
-  <!-- Canvas-based spotlight mask -->
   <canvas id="hero-spotlight-canvas" style="position:absolute;inset:0;z-index:2;pointer-events:none;width:100%;height:100%"></canvas>
 
   <div class="hero-content">
@@ -850,7 +805,6 @@ footer{
 // ── Cursor ──────────────────────────────────────────────────────────
 const cursor = document.getElementById('cursor');
 const trail  = document.getElementById('cursor-trail');
-const chartReveal = document.getElementById('chart-reveal');
 let mx = 0, my = 0;
 
 document.addEventListener('mousemove', e => {
@@ -861,8 +815,6 @@ document.addEventListener('mousemove', e => {
     trail.style.left = mx + 'px';
     trail.style.top  = my + 'px';
   }, 80);
-  chartReveal.style.left = mx + 'px';
-  chartReveal.style.top  = my + 'px';
 });
 
 document.querySelectorAll('a,button,.feat-item,.intro-card,.plan').forEach(el => {
@@ -874,64 +826,7 @@ document.querySelectorAll('.btn-large,.btn-gold').forEach(el => {
   el.addEventListener('mouseleave', () => cursor.classList.remove('on-dark-btn'));
 });
 
-// Chart reveal on hero section
-const heroEl = document.getElementById('hero');
-heroEl.addEventListener('mouseenter', () => chartReveal.classList.add('visible'));
-heroEl.addEventListener('mouseleave', () => chartReveal.classList.remove('visible'));
 
-// ── Candlestick SVG ─────────────────────────────────────────────────
-(function buildCandles() {
-  const svg = document.getElementById('candlestick-svg');
-  const candles = [
-    {x:20,  open:80, close:55, high:90, low:45, up:false},
-    {x:48,  open:55, close:72, high:78, low:48, up:true },
-    {x:76,  open:72, close:60, high:82, low:52, up:false},
-    {x:104, open:60, close:85, high:92, low:56, up:true },
-    {x:132, open:85, close:70, high:95, low:62, up:false},
-    {x:160, open:70, close:90, high:98, low:65, up:true },
-  ];
-  candles.forEach((c,i) => {
-    const color = c.up ? '#00e87a' : '#ff4757';
-    // wick
-    const wick = document.createElementNS('http://www.w3.org/2000/svg','line');
-    wick.setAttribute('x1', c.x + 8); wick.setAttribute('x2', c.x + 8);
-    wick.setAttribute('y1', c.high);  wick.setAttribute('y2', c.low);
-    wick.setAttribute('stroke', color); wick.setAttribute('stroke-width','1.5');
-    wick.style.opacity = '0';
-    wick.style.transition = `opacity .3s ${i * .08}s`;
-    svg.appendChild(wick);
-    // body
-    const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
-    const y = Math.min(c.open, c.close);
-    const h = Math.abs(c.open - c.close);
-    rect.setAttribute('x', c.x); rect.setAttribute('y', y);
-    rect.setAttribute('width', 16); rect.setAttribute('height', h || 2);
-    rect.setAttribute('rx','2'); rect.setAttribute('fill', color);
-    rect.setAttribute('fill-opacity','.85');
-    rect.style.opacity = '0';
-    rect.style.transition = `opacity .3s ${i * .08 + .04}s`;
-    svg.appendChild(rect);
-
-    chartReveal.addEventListener('transitionend', () => {
-      if (chartReveal.classList.contains('visible')) {
-        wick.style.opacity = '1'; rect.style.opacity = '1';
-      }
-    });
-    chartReveal.addEventListener('mouseenter', () => {
-      wick.style.opacity = '1'; rect.style.opacity = '1';
-    });
-    chartReveal.addEventListener('mouseleave', () => {
-      wick.style.opacity = '0'; rect.style.opacity = '0';
-    });
-  });
-
-  heroEl.addEventListener('mouseenter', () => {
-    svg.querySelectorAll('line,rect').forEach(el => el.style.opacity = '1');
-  });
-  heroEl.addEventListener('mouseleave', () => {
-    svg.querySelectorAll('line,rect').forEach(el => el.style.opacity = '0');
-  });
-})();
 
 // ── Navbar scroll ───────────────────────────────────────────────────
 const navbar = document.getElementById('navbar');
@@ -1039,182 +934,82 @@ if (typeof isLoggedIn === 'function' && isLoggedIn()) {
   window.location.href = '/app';
 }
 
-// ── Hero Spotlight Chart Reveal ──────────────────────────────────────
+// ── Pré-aquecimento: dispara as chamadas de mercado antes do login ──
+// Assim quando o usuário logar os dados já estarão prontos no /app
+(function preWarmMarketData() {
+  const API = window.ECONRADAR_API || 'http://localhost:8000/api';
+  const pairs = [
+    'USD-BRL,EUR-BRL,GBP-BRL,JPY-BRL,CAD-BRL,AUD-BRL,CHF-BRL,CNY-BRL,MXN-BRL,EUR-USD',
+    'XAU-BRL,XAG-BRL',
+    'BTC-BRL,ETH-BRL,SOL-BRL,XRP-BRL',
+  ];
+  // Fire-and-forget — sem token, sem await — apenas aquece o cache do backend
+  pairs.forEach(p => fetch(`${API}/proxy/awesome?pairs=${encodeURIComponent(p)}`).catch(()=>{}));
+  // News RSS também (sem autenticação)
+  ['general','forex','crypto'].forEach(c =>
+    fetch(`${API}/proxy/finnhub/news?category=${c}`).catch(()=>{})
+  );
+})();
+
+
+
+
+// ── Hero Spotlight Chart Reveal ──────────────────────────────────
 (function() {
   const heroEl  = document.getElementById('hero');
   const chartBg = document.getElementById('hero-chart-bg');
   const canvas  = document.getElementById('hero-spotlight-canvas');
   if (!heroEl || !chartBg || !canvas) return;
-  const ctx     = canvas.getContext('2d');
-
-  // ── Build the investment chart SVG ──────────────────────────────
+  const ctx = canvas.getContext('2d');
   const svg = document.getElementById('hero-chart-svg');
   const W = 900, H = 700;
 
-  function genPath(seed, baseY, amplitude, points) {
-    let y = baseY;
-    let d = `M 0 ${y}`;
-    const step = W / (points - 1);
-    let rand = seed;
+  function genPath(seed, baseY, amp, pts) {
+    let y = baseY, rand = seed;
+    const step = W / (pts - 1);
     function next() { rand = (rand * 1664525 + 1013904223) & 0xffffffff; return (rand >>> 0) / 0xffffffff; }
-    for (let i = 1; i < points; i++) {
-      y += (next() - 0.5) * amplitude;
-      y = Math.max(baseY - amplitude * 3, Math.min(baseY + amplitude * 3, y));
-      const cx1 = (i - 1) * step + step * 0.4;
-      const cx2 = i * step - step * 0.4;
-      d += ` C ${cx1} ${y + (next()-0.5)*20} ${cx2} ${y + (next()-0.5)*20} ${i * step} ${y}`;
+    let d = `M 0 ${y}`;
+    for (let i = 1; i < pts; i++) {
+      y = Math.max(baseY - amp*3, Math.min(baseY + amp*3, y + (next()-.5)*amp));
+      const cx1 = (i-1)*step + step*.4, cx2 = i*step - step*.4;
+      d += ` C ${cx1} ${y+(next()-.5)*20} ${cx2} ${y+(next()-.5)*20} ${i*step} ${y}`;
     }
     return d;
   }
-
   const lines = [
-    { d: genPath(42,  300, 35, 28), color:'#00e87a', opacity:0.6, width:1.8 },
-    { d: genPath(77,  420, 28, 28), color:'#c9a84c', opacity:0.5, width:1.5 },
-    { d: genPath(113, 510, 22, 28), color:'#7c5cfc', opacity:0.4, width:1.2 },
-    { d: genPath(199, 200, 18, 28), color:'#26d9d9', opacity:0.3, width:1.0 },
+    {d:genPath(42,300,35,28), color:'#00e87a', opacity:.6, width:1.8},
+    {d:genPath(77,420,28,28), color:'#c9a84c', opacity:.5, width:1.5},
+    {d:genPath(113,510,22,28),color:'#7c5cfc', opacity:.4, width:1.2},
+    {d:genPath(199,200,18,28),color:'#26d9d9', opacity:.3, width:1.0},
   ];
+  // Grid
+  for (let i=0;i<=6;i++){const l=document.createElementNS('http://www.w3.org/2000/svg','line');l.setAttribute('x1',i*(W/6));l.setAttribute('y1',0);l.setAttribute('x2',i*(W/6));l.setAttribute('y2',H);l.setAttribute('stroke','rgba(201,168,76,0.06)');l.setAttribute('stroke-width','1');svg.appendChild(l);}
+  for (let i=0;i<=5;i++){const l=document.createElementNS('http://www.w3.org/2000/svg','line');l.setAttribute('x1',0);l.setAttribute('y1',i*(H/5));l.setAttribute('x2',W);l.setAttribute('y2',i*(H/5));l.setAttribute('stroke','rgba(201,168,76,0.06)');l.setAttribute('stroke-width','1');svg.appendChild(l);}
+  // Lines + fills
+  lines.forEach((l,idx) => {
+    const gId='cg'+idx, defs=document.createElementNS('http://www.w3.org/2000/svg','defs'), grad=document.createElementNS('http://www.w3.org/2000/svg','linearGradient');
+    grad.setAttribute('id',gId);grad.setAttribute('x1','0');grad.setAttribute('y1','0');grad.setAttribute('x2','0');grad.setAttribute('y2','1');
+    const s1=document.createElementNS('http://www.w3.org/2000/svg','stop');s1.setAttribute('offset','0%');s1.setAttribute('stop-color',l.color);s1.setAttribute('stop-opacity',String(l.opacity*.3));
+    const s2=document.createElementNS('http://www.w3.org/2000/svg','stop');s2.setAttribute('offset','100%');s2.setAttribute('stop-color',l.color);s2.setAttribute('stop-opacity','0');
+    grad.appendChild(s1);grad.appendChild(s2);defs.appendChild(grad);svg.appendChild(defs);
+    const area=document.createElementNS('http://www.w3.org/2000/svg','path');area.setAttribute('d',l.d+` L ${W} ${H} L 0 ${H} Z`);area.setAttribute('fill',`url(#${gId})`);svg.appendChild(area);
+    const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',l.d);path.setAttribute('fill','none');path.setAttribute('stroke',l.color);path.setAttribute('stroke-width',String(l.width));path.setAttribute('stroke-opacity',String(l.opacity));path.setAttribute('stroke-linecap','round');svg.appendChild(path);
+  });
 
-  for (let i = 0; i <= 6; i++) {
-    const x = i * (W / 6);
-    const line = document.createElementNS('http://www.w3.org/2000/svg','line');
-    line.setAttribute('x1', x); line.setAttribute('y1', 0);
-    line.setAttribute('x2', x); line.setAttribute('y2', H);
-    line.setAttribute('stroke', 'rgba(201,168,76,0.06)');
-    line.setAttribute('stroke-width', '1');
-    svg.appendChild(line);
+  // Spotlight
+  let active=false, spotX=-999, spotY=-999, radius=0, target=0, raf=null;
+  function resize(){canvas.width=heroEl.offsetWidth;canvas.height=heroEl.offsetHeight;}
+  resize(); window.addEventListener('resize',resize);
+  function paint(){
+    const w=canvas.width,h=canvas.height; ctx.clearRect(0,0,w,h);
+    if(radius<1)return;
+    ctx.save();ctx.fillStyle='rgba(8,10,15,0.88)';ctx.beginPath();ctx.rect(0,0,w,h);ctx.arc(spotX,spotY,radius,0,Math.PI*2,true);ctx.fill('evenodd');
+    const rim=ctx.createRadialGradient(spotX,spotY,radius*.75,spotX,spotY,radius*1.1);rim.addColorStop(0,'rgba(201,168,76,0)');rim.addColorStop(1,'rgba(201,168,76,0.12)');ctx.beginPath();ctx.arc(spotX,spotY,radius*1.1,0,Math.PI*2);ctx.fillStyle=rim;ctx.fill();ctx.restore();
   }
-  for (let i = 0; i <= 5; i++) {
-    const y = i * (H / 5);
-    const line = document.createElementNS('http://www.w3.org/2000/svg','line');
-    line.setAttribute('x1', 0); line.setAttribute('y1', y);
-    line.setAttribute('x2', W); line.setAttribute('y2', y);
-    line.setAttribute('stroke', 'rgba(201,168,76,0.06)');
-    line.setAttribute('stroke-width', '1');
-    svg.appendChild(line);
-  }
-
-  lines.forEach((l, idx) => {
-    const gradId = 'chartgrad' + idx;
-    const defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
-    const grad = document.createElementNS('http://www.w3.org/2000/svg','linearGradient');
-    grad.setAttribute('id', gradId);
-    grad.setAttribute('x1','0'); grad.setAttribute('y1','0');
-    grad.setAttribute('x2','0'); grad.setAttribute('y2','1');
-    const s1 = document.createElementNS('http://www.w3.org/2000/svg','stop');
-    s1.setAttribute('offset','0%'); s1.setAttribute('stop-color', l.color);
-    s1.setAttribute('stop-opacity', String(l.opacity * 0.3));
-    const s2 = document.createElementNS('http://www.w3.org/2000/svg','stop');
-    s2.setAttribute('offset','100%'); s2.setAttribute('stop-color', l.color);
-    s2.setAttribute('stop-opacity','0');
-    grad.appendChild(s1); grad.appendChild(s2);
-    defs.appendChild(grad); svg.appendChild(defs);
-
-    const area = document.createElementNS('http://www.w3.org/2000/svg','path');
-    area.setAttribute('d', l.d + ` L ${W} ${H} L 0 ${H} Z`);
-    area.setAttribute('fill', `url(#${gradId})`);
-    svg.appendChild(area);
-
-    const path = document.createElementNS('http://www.w3.org/2000/svg','path');
-    path.setAttribute('d', l.d);
-    path.setAttribute('fill', 'none');
-    path.setAttribute('stroke', l.color);
-    path.setAttribute('stroke-width', String(l.width));
-    path.setAttribute('stroke-opacity', String(l.opacity));
-    path.setAttribute('stroke-linecap', 'round');
-    svg.appendChild(path);
-  });
-
-  ['Jan','Mar','Mai','Jul','Set','Nov'].forEach((lbl, i) => {
-    const t = document.createElementNS('http://www.w3.org/2000/svg','text');
-    t.setAttribute('x', i * (W / 6) + 6); t.setAttribute('y', H - 12);
-    t.setAttribute('fill', 'rgba(74,70,64,0.8)');
-    t.setAttribute('font-family', 'DM Mono, monospace');
-    t.setAttribute('font-size', '10');
-    t.textContent = lbl;
-    svg.appendChild(t);
-  });
-
-  [
-    { label:'IBOV', color:'#00e87a', x:20, y:40 },
-    { label:'USD/BRL', color:'#c9a84c', x:100, y:40 },
-    { label:'BTC', color:'#7c5cfc', x:200, y:40 },
-    { label:'S&P 500', color:'#26d9d9', x:260, y:40 },
-  ].forEach(item => {
-    const g = document.createElementNS('http://www.w3.org/2000/svg','g');
-    const dot = document.createElementNS('http://www.w3.org/2000/svg','circle');
-    dot.setAttribute('cx', item.x); dot.setAttribute('cy', item.y);
-    dot.setAttribute('r','3'); dot.setAttribute('fill', item.color);
-    const txt = document.createElementNS('http://www.w3.org/2000/svg','text');
-    txt.setAttribute('x', item.x + 8); txt.setAttribute('y', item.y + 4);
-    txt.setAttribute('fill', 'rgba(154,148,134,0.7)');
-    txt.setAttribute('font-family','DM Mono, monospace');
-    txt.setAttribute('font-size','9');
-    txt.textContent = item.label;
-    g.appendChild(dot); g.appendChild(txt);
-    svg.appendChild(g);
-  });
-
-  // ── Spotlight logic ─────────────────────────────────────────────
-  let heroActive = false;
-  let spotX = -999, spotY = -999;
-  let spotRadius = 0, targetRadius = 0;
-  let rafId = null;
-
-  function resizeCanvas() {
-    canvas.width  = heroEl.offsetWidth;
-    canvas.height = heroEl.offsetHeight;
-  }
-  resizeCanvas();
-  window.addEventListener('resize', resizeCanvas);
-
-  function paintSpotlight() {
-    const w = canvas.width, h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
-    if (spotRadius < 1) return;
-    ctx.save();
-    ctx.fillStyle = 'rgba(8,10,15,0.88)';
-    ctx.beginPath();
-    ctx.rect(0, 0, w, h);
-    ctx.arc(spotX, spotY, spotRadius, 0, Math.PI * 2, true);
-    ctx.fill('evenodd');
-    const rim = ctx.createRadialGradient(spotX, spotY, spotRadius * 0.75, spotX, spotY, spotRadius * 1.1);
-    rim.addColorStop(0, 'rgba(201,168,76,0.0)');
-    rim.addColorStop(1, 'rgba(201,168,76,0.12)');
-    ctx.beginPath();
-    ctx.arc(spotX, spotY, spotRadius * 1.1, 0, Math.PI * 2);
-    ctx.fillStyle = rim;
-    ctx.fill();
-    ctx.restore();
-  }
-
-  function animate() {
-    spotRadius += (targetRadius - spotRadius) * 0.1;
-    paintSpotlight();
-    rafId = requestAnimationFrame(animate);
-  }
-
-  heroEl.addEventListener('mouseenter', () => {
-    heroActive = true;
-    chartBg.classList.add('active');
-    targetRadius = 220;
-    if (!rafId) rafId = requestAnimationFrame(animate);
-  });
-
-  heroEl.addEventListener('mouseleave', () => {
-    heroActive = false;
-    targetRadius = 0;
-    chartBg.classList.remove('active');
-    setTimeout(() => {
-      if (!heroActive) { cancelAnimationFrame(rafId); rafId = null; ctx.clearRect(0,0,canvas.width,canvas.height); }
-    }, 600);
-  });
-
-  document.addEventListener('mousemove', e => {
-    if (!heroActive) return;
-    const rect = heroEl.getBoundingClientRect();
-    spotX = e.clientX - rect.left;
-    spotY = e.clientY - rect.top;
-  });
+  function animate(){radius+=(target-radius)*.1;paint();raf=requestAnimationFrame(animate);}
+  heroEl.addEventListener('mouseenter',()=>{active=true;chartBg.classList.add('active');target=220;if(!raf)raf=requestAnimationFrame(animate);});
+  heroEl.addEventListener('mouseleave',()=>{active=false;target=0;chartBg.classList.remove('active');setTimeout(()=>{if(!active){cancelAnimationFrame(raf);raf=null;ctx.clearRect(0,0,canvas.width,canvas.height);}},600);});
+  document.addEventListener('mousemove',e=>{if(!active)return;const r=heroEl.getBoundingClientRect();spotX=e.clientX-r.left;spotY=e.clientY-r.top;});
 })();
 
 </script>
