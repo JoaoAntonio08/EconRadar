@@ -381,6 +381,39 @@ async def proxy_coingecko(ids: str, vs_currencies: str = "usd,brl", include_24hr
         raise HTTPException(502, f"CoinGecko error: {r.status_code}")
     return r.json()
 
+# ── Proxy Yahoo Finance (stocks + indices + commodities) ────────────────────────
+@app.get("/api/proxy/yahoo")
+async def proxy_yahoo(symbols: str):
+    """Busca cotações via Yahoo Finance — suporta SPY, QQQ, DIA, ^BVSP, CL=F (WTI)"""
+    syms = symbols.replace(' ','').split(',')[:10]
+    yf_symbols = ','.join(syms)
+    url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={yf_symbols}&fields=regularMarketPrice,regularMarketChangePercent,regularMarketPreviousClose"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15, headers=headers) as client:
+            r = await client.get(url)
+        if r.status_code != 200:
+            raise HTTPException(502, f"Yahoo Finance error: {r.status_code}")
+        data = r.json()
+        results = {}
+        for q in data.get("quoteResponse", {}).get("result", []):
+            sym = q.get("symbol","")
+            results[sym] = {
+                "c":   q.get("regularMarketPrice", 0),
+                "dp":  q.get("regularMarketChangePercent", 0),
+                "pc":  q.get("regularMarketPreviousClose", 0),
+            }
+        return results
+    except (httpx.ReadTimeout, httpx.ConnectTimeout):
+        raise HTTPException(504, "Yahoo Finance timeout")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Yahoo Finance error: {str(e)[:100]}")
+
 # ── Proxy Finnhub quote ────────────────────────────────────────────────────────
 # Finnhub free tier blocks /quote for most symbols — returns empty or 403.
 # We map common symbols to AwesomeAPI pairs which work reliably.
