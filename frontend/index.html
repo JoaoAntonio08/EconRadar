@@ -1045,14 +1045,13 @@ async function loadMetals() {
     renderErr('xau'); renderErr('xag');
   }
 
-  // Petróleo WTI via Finnhub
+  // Petróleo WTI via Finnhub (USO ETF × 10 ≈ WTI)
   try {
-    const wtiToken = localStorage.getItem('er_token');
-    const rw = await fetch(`${API_BASE}/proxy/finnhub/quote?symbol=USO`, {headers:{'Authorization':'Bearer '+wtiToken}});
+    const rw = await fetch(`${FH}/quote?symbol=USO&token=${FH_KEY}`);
     if (!rw.ok) throw new Error(rw.status);
     const dw = await rw.json();
     if (!dw.c) throw new Error('no data');
-    const wtiEst = dw.c * 10; // USO ETF ≈ WTI/10
+    const wtiEst = dw.c * 10;
     const chgW = dw.dp || 0;
     renderAsset('wti', wtiEst, chgW, 'USD / barril (est.)');
     mkSpark('sp-wti', sparkHist(wtiEst, chgW), 'var(--amber)');
@@ -1075,28 +1074,22 @@ async function loadMetals() {
 // ══════════════════════════════════════════════════
 async function loadIbov() {
   let price = null, chg = 0;
-  // Tentativa 1: BVSP via Finnhub
+  // Tentativa 1: BVSP via Finnhub direto
   try {
-    const ibToken = localStorage.getItem('er_token');
-      const r = await fetch(`${API_BASE}/proxy/finnhub/quote?symbol=BVSP`, {headers:{'Authorization':'Bearer '+ibToken}});
+    const r = await fetch(`${FH}/quote?symbol=BVSP&token=${FH_KEY}`);
     if (r.ok) {
       const d = await r.json();
       if (d.c && d.c > 1000) { price = d.c; chg = d.dp || 0; }
     }
   } catch(_) {}
 
-  // Tentativa 2: EWZ ETF (iShares Brazil) → estima IBOV
+  // Tentativa 2: EWZ ETF × 1350 via Finnhub
   if (!price) {
     try {
-      const ibToken2 = localStorage.getItem('er_token');
-        const r2 = await fetch(`${API_BASE}/proxy/finnhub/quote?symbol=EWZ`, {headers:{'Authorization':'Bearer '+ibToken2}});
+      const r2 = await fetch(`${FH}/quote?symbol=EWZ&token=${FH_KEY}`);
       if (r2.ok) {
         const d2 = await r2.json();
-        if (d2.c) {
-          // EWZ ≈ IBOV / 1350 (fator aproximado)
-          price = d2.c * 1350;
-          chg = d2.dp || 0;
-        }
+        if (d2.c) { price = d2.c * 1350; chg = d2.dp || 0; }
       }
     } catch(_) {}
   }
@@ -1193,6 +1186,7 @@ async function loadCrypto() {
 //  5. FINNHUB — SPY, QQQ, DIA (US ETFs)
 // ══════════════════════════════════════════════════
 async function loadStocks() {
+  // Finnhub direto do browser (como no arquivo original)
   const etfs = [
     { id:'spy', sym:'SPY', col:'var(--accent)', wide:true },
     { id:'qqq', sym:'QQQ', col:'var(--accent2)', wide:false },
@@ -1200,11 +1194,11 @@ async function loadStocks() {
   ];
   for (const e of etfs) {
     try {
-      const stToken = localStorage.getItem('er_token');
-      const r = await fetch(`${API_BASE}/proxy/finnhub/quote?symbol=${e.sym}`, {headers:{'Authorization':'Bearer '+stToken}});
+      const r = await fetch(`${FH}/quote?symbol=${e.sym}&token=${FH_KEY}`);
       if (!r.ok) throw new Error(r.status);
       const d = await r.json(); if (!d.c) throw new Error('no data');
       renderAsset(e.id, d.c, d.dp||0, e.sym+' ETF', false);
+      mkt[e.id] = { price: d.c, chgPct: d.dp||0, label: e.sym };
       const hist = sparkHist(d.c, d.dp||0, 30);
       const lbl = Array.from({length:30},(_,i)=>{const dt=new Date(Date.now()-(29-i)*86400000);return`${dt.getDate()}/${dt.getMonth()+1}`;});
       if (e.wide) mkLine('ch-spy', lbl, hist, e.col);
@@ -1255,17 +1249,16 @@ function newsTag(cat) {
 async function loadNews() {
   const el = document.getElementById('newsList'); if (!el) return;
   try {
+    // Finnhub direto do browser (sem passar pelo backend)
     const [n1, n2, n3] = await Promise.all([
-      ...(() => { const nTok = localStorage.getItem('er_token'); const nh = {'Authorization':'Bearer '+nTok}; return [
-        fetch(`${API_BASE}/proxy/finnhub/news?category=general`, {headers:nh}).then(r=>r.ok?r.json():[]),
-        fetch(`${API_BASE}/proxy/finnhub/news?category=forex`,   {headers:nh}).then(r=>r.ok?r.json():[]),
-        fetch(`${API_BASE}/proxy/finnhub/news?category=crypto`,  {headers:nh}).then(r=>r.ok?r.json():[]),
-      ]; })()
+      fetch(`${FH}/news?category=general&token=${FH_KEY}`).then(r=>r.ok?r.json():[]).catch(()=>[]),
+      fetch(`${FH}/news?category=forex&token=${FH_KEY}`).then(r=>r.ok?r.json():[]).catch(()=>[]),
+      fetch(`${FH}/news?category=crypto&token=${FH_KEY}`).then(r=>r.ok?r.json():[]).catch(()=>[]),
     ]);
     const combined = [
       ...(Array.isArray(n1)?n1:[]),
       ...(Array.isArray(n2)?n2:[]),
-      ...(Array.isArray(n3)?n3:[])
+      ...(Array.isArray(n3)?n3:[]),
     ];
     if (!combined.length) throw new Error('empty');
     const seen = new Set();
@@ -1737,7 +1730,7 @@ async function refreshNewsPage() {
     try {
       const cats = ['general','forex','crypto','merger'];
       const results = await Promise.all(
-        cats.map(c => fetch(`${API_BASE}/proxy/finnhub/news?category=${c}`, {headers:{'Authorization':'Bearer '+localStorage.getItem('er_token')}}).then(r=>r.ok?r.json():[]).catch(()=>[]))
+        cats.map(c => fetch(`${FH}/news?category=${c}&token=${FH_KEY}`).then(r=>r.ok?r.json():[]).catch(()=>[]))
       );
       const all = results.flatMap((r,i) => Array.isArray(r) ? r.map(n=>({...n,_cat:cats[i]})) : []);
       const seen = new Set();
@@ -2358,22 +2351,23 @@ document.addEventListener('DOMContentLoaded', () => {
     window.location.href = '/';
     return;
   }
-  // A inicialização principal aguarda o evento de login disparado pelo api.js
-  window.addEventListener('er:loggedin', async () => {
+
+  // Carregar perfil/config e dados imediatamente (como o arquivo original)
+  loadConfig();
+  loadProfile();
+  loadAll();
+  loadNews();
+  aiLoadSessions();
+  setInterval(loadAll,  (appConfig?.interval || 60) * 1000);
+  setInterval(loadNews, 300000);
+
+  // Atualizar avatar quando o login for confirmado pelo api.js
+  window.addEventListener('er:loggedin', () => {
     const user = getUser();
     if (user?.display_name) {
       document.getElementById('userAvatar').textContent =
         user.display_name.trim().split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2);
     }
-    await loadConfig();
-    await loadProfile();
-    loadAll();
-    loadNews();
-    aiLoadSessions();
-    if (window._loadAllInterval) clearInterval(window._loadAllInterval);
-    if (window._loadNewsInterval) clearInterval(window._loadNewsInterval);
-    window._loadAllInterval  = setInterval(loadAll,  (appConfig.interval || 60) * 1000);
-    window._loadNewsInterval = setInterval(loadNews, 300000);
   }, { once: false });
 });
 
