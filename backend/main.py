@@ -31,7 +31,14 @@ TOKEN_HOURS   = int(os.getenv("TOKEN_EXPIRE_H", "24"))
 OR_KEY        = os.getenv("OPENROUTER_API_KEY", "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")
 FH_KEY        = os.getenv("FINNHUB_API_KEY", "d87jkq1r01qmhakg2qrgd87jkq1r01qmhakg2qs0")
 OR_MODEL      = os.getenv("OR_MODEL", "nvidia/nemotron-3-nano-30b-a3b:free")
-ALLOWED       = os.getenv("ALLOWED_ORIGINS", "http://localhost:5500,http://127.0.0.1:5500").split(",")
+ALLOWED_ENV    = os.getenv("ALLOWED_ORIGINS", "").strip()
+# Origens permitidas: localhost padrão + qualquer domínio ngrok + o que vier do .env
+_default_origins = [
+    "http://localhost:8000", "http://127.0.0.1:8000",
+    "http://localhost:5500", "http://127.0.0.1:5500",
+    "http://localhost:3000", "http://127.0.0.1:3000",
+]
+ALLOWED = _default_origins + ([o.strip() for o in ALLOWED_ENV.split(",") if o.strip()] if ALLOWED_ENV else [])
 DATA_FILE     = Path(__file__).parent / "data" / "data.json"
 
 # ── JSON Storage ───────────────────────────────────────────────────────────────
@@ -62,6 +69,7 @@ app = FastAPI(title="EconRadar API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED,
+    allow_origin_regex=r"https://.*\.ngrok(-free)?\.app|https://.*\.ngrok\.io|https://.*\.ngrok-free\.dev",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
