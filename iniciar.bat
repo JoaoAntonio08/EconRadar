@@ -15,12 +15,22 @@ if not exist venv (
 )
 
 echo.
-echo 
 echo      EconRadar Backend iniciando...
-echo  Acesse: http://localhost:8000
-echo  Docs:   http://localhost:8000/docs 
-echo  Ctrl+C para parar                 
+echo  Acesse local: http://localhost:8000
+echo  Ctrl+C para parar
 echo.
 
-python main.py
+:: Inicia o backend em segundo plano
+start "EconRadar Backend" python main.py
+
+:: Aguarda o backend subir
+timeout /t 3 /nobreak >nul
+
+:: Inicia o ngrok tunelando a porta 8000 (backend + frontend juntos)
+echo  Iniciando ngrok na porta 8000...
+echo  A URL publica aparecera na janela do ngrok.
+echo.
+cd /d "%~dp0"
+ngrok.exe http 8000
+
 pause
