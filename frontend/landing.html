@@ -7,7 +7,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Mono:wght@300;400;500&family=Syne:wght@400;700;800&display=swap" rel="stylesheet"/>
-<script>window.ECONRADAR_API = window.ECONRADAR_API || 'http://localhost:8000/api';</script>
+<script>
+  // Detecta automaticamente a URL base — funciona com localhost E ngrok
+  window.ECONRADAR_API = window.location.origin + '/api';
+</script>
 <script src="/api.js"></script>
 <style>
 /* ── Reset & Base ──────────────────────────────────────────────── */
@@ -937,7 +940,7 @@ if (typeof isLoggedIn === 'function' && isLoggedIn()) {
 // ── Pré-aquecimento: dispara as chamadas de mercado antes do login ──
 // Assim quando o usuário logar os dados já estarão prontos no /app
 (function preWarmMarketData() {
-  const API = window.ECONRADAR_API || 'http://localhost:8000/api';
+  const API = window.ECONRADAR_API || (window.location.origin + '/api');
   const pairs = [
     'USD-BRL,EUR-BRL,GBP-BRL,JPY-BRL,CAD-BRL,AUD-BRL,CHF-BRL,CNY-BRL,MXN-BRL,EUR-USD',
     'XAU-BRL,XAG-BRL',

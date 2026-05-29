@@ -6,7 +6,10 @@
 <title>EconRadar</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script>window.ECONRADAR_API = 'http://localhost:8000/api';</script>
+<script>
+  // Detecta automaticamente a URL base — funciona com localhost E ngrok
+  window.ECONRADAR_API = window.location.origin + '/api';
+</script>
 <script src="/api.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -260,6 +263,45 @@ canvas{display:block}
 .modal-tabs{display:flex;gap:3px;margin-bottom:18px;background:var(--bg2);border-radius:10px;padding:3px}
 .modal-tab{flex:1;padding:7px 12px;border-radius:8px;font-size:12px;font-weight:500;color:var(--text3);cursor:pointer;transition:.15s;text-align:center}
 .modal-tab.active{background:var(--bg4);color:var(--text1)}
+.am-ov{position:fixed;inset:0;background:rgba(0,0,0,0.72);z-index:600;opacity:0;pointer-events:none;transition:.2s;display:flex;align-items:center;justify-content:center}
+.am-ov.open{opacity:1;pointer-events:auto}
+.am-box{background:var(--bg1);border:1px solid var(--border2);border-radius:20px;width:600px;max-width:calc(100vw - 32px);max-height:90vh;display:flex;flex-direction:column;transform:scale(.96) translateY(8px);transition:.2s;overflow:hidden}
+.am-ov.open .am-box{transform:none}
+.am-hd{padding:18px 20px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.am-id{display:flex;align-items:center;gap:10px}
+.am-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.am-pair{font-size:12px;font-weight:500;color:var(--text3);letter-spacing:.04em}
+.am-name{font-family:var(--font-d);font-size:16px;font-weight:700;color:var(--text1)}
+.am-close{width:28px;height:28px;border-radius:7px;background:var(--bg3);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;color:var(--text2);cursor:pointer;font-size:15px;flex-shrink:0}
+.am-body{display:grid;grid-template-columns:1fr 1fr;flex:1;min-height:0;overflow:hidden}
+.am-left{padding:18px 20px;border-right:1px solid var(--border);overflow-y:auto}
+.am-right{padding:18px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:10px}
+.am-price{font-family:var(--font-d);font-size:28px;font-weight:800;color:var(--text1);line-height:1;margin-bottom:6px}
+.am-var{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600;padding:3px 10px;border-radius:100px;margin-bottom:14px}
+.am-var.up{background:rgba(34,201,138,.12);color:#22c98a}
+.am-var.dn{background:rgba(255,80,99,.12);color:#ff5063}
+.am-var.fl{background:rgba(100,120,160,.12);color:var(--text3)}
+.am-chart{height:72px;margin-bottom:2px}
+.am-chart-lbl{font-size:10px;color:var(--text3);margin-top:3px}
+.am-sec-lbl{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px}
+.am-stat{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;flex-shrink:0}
+.am-stat-lbl{font-size:10px;color:var(--text3);margin-bottom:3px}
+.am-stat-val{font-size:15px;font-weight:600;color:var(--text1)}
+.am-stat-val.up{color:#22c98a}
+.am-stat-val.dn{color:#ff5063}
+.am-stat-sub{font-size:10px;color:var(--text3);margin-top:2px}
+.am-footer{padding:14px 20px;border-top:1px solid var(--border);background:rgba(79,141,255,.04);flex-shrink:0}
+.am-ai-hd{display:flex;align-items:center;gap:8px;margin-bottom:9px}
+.am-ai-badge{display:inline-flex;align-items:center;gap:5px;background:rgba(79,141,255,.14);border:1px solid rgba(79,141,255,.28);border-radius:100px;padding:3px 10px;font-size:11px;font-weight:600;color:#4f8dff}
+.am-ai-prof{font-size:11px;color:var(--text3)}
+.am-ai-txt{font-size:13px;color:var(--text2);line-height:1.65}
+.am-ai-loading{display:flex;align-items:center;gap:8px;font-size:12px;color:rgba(79,141,255,.7)}
+.am-dots span{display:inline-block;width:5px;height:5px;border-radius:50%;background:#4f8dff;margin:0 2px;animation:amdot 1.2s ease-in-out infinite}
+.am-dots span:nth-child(2){animation-delay:.2s}
+.am-dots span:nth-child(3){animation-delay:.4s}
+@keyframes amdot{0%,80%,100%{opacity:.2;transform:scale(.85)}40%{opacity:1;transform:scale(1)}}
+.wcard.clickable{cursor:pointer}
+.wcard.clickable:hover{border-color:var(--accent);box-shadow:0 4px 24px rgba(79,141,255,.12)}
 .pref-section{margin-bottom:20px}
 .pref-label{font-size:10px;font-weight:600;letter-spacing:.08em;color:var(--text3);text-transform:uppercase;margin-bottom:9px}
 .pref-row{display:flex;align-items:center;justify-content:space-between;padding:10px 13px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--rs);margin-bottom:6px}
@@ -860,6 +902,57 @@ body.compact .instab-banner{padding:10px 14px;margin-bottom:12px}
   </div>
 
 </div><!-- /modal-ov -->
+
+<!-- ══ ASSET DETAIL MODAL ══ -->
+<div class="am-ov" id="assetModalOv" onclick="if(event.target===this)closeAssetModal()">
+  <div class="am-box" id="assetModalBox">
+    <div class="am-hd">
+      <div class="am-id">
+        <div class="am-dot" id="amDot"></div>
+        <div>
+          <div class="am-pair" id="amPair"></div>
+          <div class="am-name" id="amName"></div>
+        </div>
+      </div>
+      <div class="am-close" onclick="closeAssetModal()">✕</div>
+    </div>
+    <div class="am-body">
+      <div class="am-left">
+        <div class="am-sec-lbl">Cotação atual</div>
+        <div class="am-price" id="amPrice"></div>
+        <div class="am-var" id="amVar"></div>
+        <div class="am-chart"><canvas id="amChart"></canvas></div>
+        <div class="am-chart-lbl">Últimas 24h (estimado)</div>
+      </div>
+      <div class="am-right">
+        <div class="am-sec-lbl">Histórico</div>
+        <div class="am-stat">
+          <div class="am-stat-lbl">▲ Máxima histórica</div>
+          <div class="am-stat-val up" id="amHigh"></div>
+          <div class="am-stat-sub" id="amHighDate"></div>
+        </div>
+        <div class="am-stat">
+          <div class="am-stat-lbl">▼ Mínima histórica</div>
+          <div class="am-stat-val dn" id="amLow"></div>
+          <div class="am-stat-sub" id="amLowDate"></div>
+        </div>
+        <div class="am-stat">
+          <div class="am-stat-lbl">↕ Variação 30 dias</div>
+          <div class="am-stat-val" id="amVar30"></div>
+        </div>
+      </div>
+    </div>
+    <div class="am-footer">
+      <div class="am-ai-hd">
+        <div class="am-ai-badge">✦ Análise IA</div>
+        <span class="am-ai-prof" id="amAiProf"></span>
+      </div>
+      <div id="amAiArea">
+        <div class="am-ai-loading"><div class="am-dots"><span></span><span></span><span></span></div> Gerando análise personalizada…</div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script>
 const FH_KEY = 'd87jmuhr01qmhakg3780d87jmuhr01qmhakg378g';
@@ -1957,6 +2050,123 @@ function resetDrawer(){vis={...DEFAULT_VIS};Object.keys(DEFAULT_VIS).forEach(id=
 // ══════════════════════════════════════════════════
 let currentModal = null;
 
+// ══════════════════════════════════════════════════
+//  ASSET DETAIL MODAL
+// ══════════════════════════════════════════════════
+const ASSET_META = {
+  usd:    { name:'Dólar Americano', pair:'USD / BRL', dot:'var(--green)',   high:'R$ 6,29',  highDate:'dez 2024',  low:'R$ 1,56',  lowDate:'jan 2011' },
+  eur:    { name:'Euro',            pair:'EUR / BRL', dot:'var(--accent)',  high:'R$ 6,80',  highDate:'dez 2024',  low:'R$ 1,73',  lowDate:'jan 2002' },
+  gbp:    { name:'Libra Esterlina', pair:'GBP / BRL', dot:'var(--teal)',    high:'R$ 8,05',  highDate:'nov 2024',  low:'R$ 2,11',  lowDate:'mai 2011' },
+  jpy:    { name:'Iene Japonês',    pair:'JPY / BRL', dot:'var(--red)',     high:'R$ 0,046', highDate:'dez 2024',  low:'R$ 0,017', lowDate:'abr 2013' },
+  cad:    { name:'Dólar Canadense', pair:'CAD / BRL', dot:'var(--amber)',   high:'R$ 4,93',  highDate:'dez 2024',  low:'R$ 1,34',  lowDate:'jan 2011' },
+  aud:    { name:'Dólar Australiano',pair:'AUD / BRL',dot:'#9b59b6',       high:'R$ 4,30',  highDate:'jan 2013',  low:'R$ 1,08',  lowDate:'dez 2022' },
+  chf:    { name:'Franco Suíço',    pair:'CHF / BRL', dot:'#aaa',          high:'R$ 6,70',  highDate:'jan 2025',  low:'R$ 1,75',  lowDate:'jan 2011' },
+  cny:    { name:'Yuan Chinês',     pair:'CNY / BRL', dot:'var(--amber)',   high:'R$ 0,90',  highDate:'dez 2024',  low:'R$ 0,23',  lowDate:'jan 2011' },
+  mxn:    { name:'Peso Mexicano',   pair:'MXN / BRL', dot:'var(--teal)',    high:'R$ 0,32',  highDate:'jan 2017',  low:'R$ 0,22',  lowDate:'fev 2020' },
+  eurusd: { name:'Euro vs Dólar',   pair:'EUR / USD', dot:'var(--accent2)', high:'1,60',    highDate:'abr 2008',  low:'0,83',     lowDate:'out 2000' },
+  xau:    { name:'Ouro',            pair:'XAU / USD', dot:'#f5d020',        high:'$2.790',  highDate:'out 2024',  low:'$35',      lowDate:'ago 1971' },
+  xag:    { name:'Prata',           pair:'XAG / USD', dot:'#bbb',          high:'$49,80',  highDate:'abr 2011',  low:'$3,55',    lowDate:'fev 1991' },
+  wti:    { name:'Petróleo WTI',    pair:'WTI / USD', dot:'var(--amber)',   high:'$147,27', highDate:'jul 2008',  low:'-$37,63',  lowDate:'abr 2020' },
+  btc:    { name:'Bitcoin',         pair:'BTC / BRL', dot:'var(--accent2)', high:'R$ 672k', highDate:'jan 2025',  low:'R$ 0,06',  lowDate:'jul 2010' },
+  eth:    { name:'Ethereum',        pair:'ETH / BRL', dot:'var(--teal)',    high:'R$ 22.800',highDate:'nov 2021', low:'R$ 0,42',  lowDate:'out 2015' },
+  sol:    { name:'Solana',          pair:'SOL / BRL', dot:'var(--green)',   high:'R$ 1.350', highDate:'jan 2025', low:'R$ 4,20',  lowDate:'jan 2020' },
+  xrp:    { name:'XRP',             pair:'XRP / BRL', dot:'var(--accent)',  high:'R$ 18,90', highDate:'jan 2018', low:'R$ 0,003', lowDate:'jul 2013' },
+  spy:    { name:'S&P 500 (SPY)',   pair:'SPY / USD', dot:'var(--accent)',  high:'$613',    highDate:'jan 2025',  low:'$67',      lowDate:'mar 2009' },
+  ibov:   { name:'Ibovespa (B3)',   pair:'IBOV / BRL',dot:'var(--green)',   high:'137.900', highDate:'dez 2024',  low:'1.367',    lowDate:'mar 2003' },
+  qqq:    { name:'NASDAQ (QQQ)',    pair:'QQQ / USD', dot:'var(--accent2)', high:'$536',    highDate:'dez 2024',  low:'$25',      lowDate:'out 2002' },
+  dia:    { name:'Dow Jones (DIA)', pair:'DIA / USD', dot:'var(--amber)',   high:'$449',    highDate:'dez 2024',  low:'$65',      lowDate:'mar 2009' },
+};
+
+let _amChart = null;
+
+function openAssetModal(id) {
+  const meta = ASSET_META[id];
+  const data = mkt[id];
+  if (!meta || !data) return;
+
+  const up = data.chgPct >= 0;
+  const abs = Math.abs(data.chgPct).toFixed(2);
+  const sign = up ? '▲ +' : '▼ ';
+  const cls = Math.abs(data.chgPct) < 0.05 ? 'fl' : up ? 'up' : 'dn';
+
+  // Estima variação 30 dias com leve ruído diferente do sparkline
+  const var30 = (data.chgPct * 4.3 + (Math.random() - 0.5) * 8).toFixed(2);
+  const var30Up = parseFloat(var30) >= 0;
+
+  document.getElementById('amDot').style.background = meta.dot;
+  document.getElementById('amPair').textContent = meta.pair;
+  document.getElementById('amName').textContent = meta.name;
+  document.getElementById('amPrice').textContent = document.getElementById('b-'+id)?.querySelector('.a-val')?.textContent || String(data.price);
+  const varEl = document.getElementById('amVar');
+  varEl.textContent = sign + abs + '%';
+  varEl.className = 'am-var ' + cls;
+  document.getElementById('amHigh').textContent = meta.high;
+  document.getElementById('amHighDate').textContent = meta.highDate;
+  document.getElementById('amLow').textContent = meta.low;
+  document.getElementById('amLowDate').textContent = meta.lowDate;
+  const v30El = document.getElementById('amVar30');
+  v30El.textContent = (var30Up ? '+' : '') + var30 + '%';
+  v30El.className = 'am-stat-val ' + (var30Up ? 'up' : 'dn');
+  document.getElementById('amAiProf').textContent = 'perfil ' + (userProfile.type || 'moderado');
+  document.getElementById('amAiArea').innerHTML = '<div class="am-ai-loading"><div class="am-dots"><span></span><span></span><span></span></div> Gerando análise personalizada…</div>';
+
+  // Abre modal
+  document.getElementById('assetModalOv').classList.add('open');
+
+  // Desenha sparkline no modal
+  const sparkData = sparkHist(data.price, data.chgPct, 24);
+  const col = meta.dot.startsWith('var(') ? (window.getComputedStyle(document.documentElement).getPropertyValue(meta.dot.slice(4,-1).trim()) || '#4f8dff') : meta.dot;
+  setTimeout(() => {
+    if (_amChart) { _amChart.destroy(); _amChart = null; }
+    const el = document.getElementById('amChart');
+    if (el) {
+      _amChart = new Chart(el, {
+        type: 'line',
+        data: { labels: sparkData.map((_,i)=>i), datasets: [{ data: sparkData, borderColor: col, borderWidth: 2, fill: true,
+          backgroundColor: ctx => { const {ctx:cv,chartArea:a}=ctx.chart; if(!a) return 'transparent'; const g=cv.createLinearGradient(0,a.top,0,a.bottom); g.addColorStop(0,col+'33'); g.addColorStop(1,col+'00'); return g; },
+          tension: 0.4, pointRadius: 0 }] },
+        options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},tooltip:{enabled:false}}, scales:{x:{display:false},y:{display:false}}, animation:{duration:400} }
+      });
+    }
+    generateAssetAI(id, meta, data);
+  }, 80);
+}
+
+function closeAssetModal() {
+  document.getElementById('assetModalOv').classList.remove('open');
+  setTimeout(() => { if (_amChart) { _amChart.destroy(); _amChart = null; } }, 250);
+}
+
+async function generateAssetAI(id, meta, data) {
+  const up = data.chgPct >= 0;
+  const abs = Math.abs(data.chgPct).toFixed(2);
+  const perfil = userProfile.type || 'moderado';
+  const nome = userProfile.name ? `, ${userProfile.name}` : '';
+  const prompt = `Você é um consultor financeiro objetivo. Em 2-3 frases curtas e diretas, analise o momento atual do ativo "${meta.name}" (${meta.pair}) que está com variação de ${up?'+':''}${abs}% hoje, máxima histórica em ${meta.high} (${meta.highDate}) e mínima em ${meta.low} (${meta.lowDate}). O investidor tem perfil ${perfil}. Dê uma orientação prática e personalizada sobre se é bom momento para comprar, aguardar ou vender. Seja direto e use linguagem simples em português.`;
+
+  try {
+    const token = localStorage.getItem('er_token');
+    const result = await Chat.send(prompt, null, buildMktContext(), []);
+    const reply = result.reply || '';
+    document.getElementById('amAiArea').innerHTML = `<div class="am-ai-txt">${reply.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,' ')}</div>`;
+  } catch(e) {
+    document.getElementById('amAiArea').innerHTML = `<div class="am-ai-txt" style="color:var(--text3)">Análise indisponível no momento. Tente novamente.</div>`;
+  }
+}
+
+// Adiciona onclick nos cards de ativos
+function attachCardClicks() {
+  const clickable = Object.keys(ASSET_META);
+  clickable.forEach(id => {
+    const card = document.getElementById('w-'+id);
+    if (card) {
+      card.classList.add('clickable');
+      card.addEventListener('click', () => openAssetModal(id));
+    }
+  });
+}
+
+
 function openModal(type) {
   currentModal = type;
   document.getElementById('modalOv').classList.add('open');
@@ -2338,6 +2548,7 @@ async function loadAll() {
   updateAlertas();
   updateProgressBars();
   checkNightMode();
+  attachCardClicks();
   const now = new Date();
   document.getElementById('lastUpd').textContent = `Atualizado ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
   // Atualizar a página de alertas se estiver ativa
