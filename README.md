@@ -9,24 +9,24 @@
 
 ---
 
-## 📋 Overview
+## Overview
 
 **EconRadar** is a cutting-edge economic intelligence platform that empowers investors and traders with real-time market data, AI-driven sentiment analysis, and personalized portfolio monitoring. Built with modern technologies, the platform combines robust backend services with an intuitive, high-performance frontend interface.
 
 ### Key Features
 
-- 🤖 **AI-Powered Chat Interface** - OpenRouter-integrated conversational AI for market insights
-- 📊 **Real-time Market Data** - Integration with Finnhub API for live quotes and market indicators
-- 📈 **Multi-asset Monitoring** - Track forex, commodities, stocks, and cryptocurrencies simultaneously
-- ⚡ **Intelligent Alerts** - Customizable threshold-based notifications with volatility analysis
-- 🔐 **Enterprise-Grade Security** - JWT authentication, bcrypt password hashing, CORS middleware
-- 💾 **Persistent Storage** - JSON-based data persistence with automatic backups
-- 🌐 **Cross-platform** - Seamless localhost and production deployment with ngrok tunneling support
-- 🎨 **Modern UI/UX** - Dark-themed, responsive design with real-time updates
+- **AI-Powered Chat Interface** - OpenRouter-integrated conversational AI for market insights
+- **Real-time Market Data** - Integration with Finnhub API for live quotes and market indicators
+- **Multi-asset Monitoring** - Track forex, commodities, stocks, and cryptocurrencies simultaneously
+- **Intelligent Alerts** - Customizable threshold-based notifications with volatility analysis
+- **Enterprise-Grade Security** - JWT authentication, bcrypt password hashing, CORS middleware
+- **Persistent Storage** - JSON-based data persistence with automatic backups
+- **Cross-platform** - Seamless localhost and production deployment with ngrok tunneling support
+- **Modern UI/UX** - Dark-themed, responsive design with real-time updates
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ### System Design
 
@@ -40,7 +40,7 @@
                      │ HTTP/CORS
 ┌────────────────────▼────────────────────────────────────────┐
 │             FastAPI Backend (Python 3.9+)                   │
-│  ├── Authentication & Authorization (JWT/Bearer)           │
+│  ├── Authentication & Authorization (JWT/Bearer)            │
 │  ├── Chat Management (OpenRouter AI)                        │
 │  ├── Market Data Pipeline (Finnhub)                         │
 │  ├── User Profile & Configuration                           │
@@ -71,7 +71,7 @@
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -137,18 +137,18 @@ Open your browser and navigate to:
 
 ---
 
-## 🔑 Default Credentials
+## Default Credentials
 
 | Field | Value | Notes |
-|-------|-------|-------|
+|----------|-------  |-------|
 | Username | `Admin` | Fixed user account |
 | Password | `12345` | Default password - **CHANGE in production** |
 
-⚠️ **Security Warning**: Change default credentials immediately in production environments.
+**Security Warning**: Change default credentials immediately in production environments.
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
 ```
 EconRadar/
@@ -168,13 +168,13 @@ EconRadar/
 
 ---
 
-## 🔌 API Endpoints
+## API Endpoints
 
 ### Authentication
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/auth/login` | POST | User login (returns JWT token) |
-| `/api/auth/refresh` | POST | Refresh expired JWT token |
+| Endpoint            | Method   | Description  |
+|---------------------|----------|--------------------------------|
+| `/api/auth/login`   | POST     | User login (returns JWT token) |
+| `/api/auth/refresh` | POST     | Refresh expired JWT token      |
 
 ### User Management
 | Endpoint | Method | Description |
@@ -200,7 +200,7 @@ EconRadar/
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 ### User Settings (Stored in `data.json`)
 
@@ -232,29 +232,7 @@ EconRadar/
 
 ---
 
-## 🛡️ Security Considerations
-
-### Current Implementation
-- ✅ JWT token-based authentication (HS256 algorithm)
-- ✅ Bcrypt password hashing (12-round salt)
-- ✅ CORS middleware with whitelisted origins
-- ✅ Bearer token authorization on all protected endpoints
-- ✅ Environment-based sensitive configuration
-
-### Production Recommendations
-- 🔴 Change `SECRET_KEY` to a cryptographically secure random string (32+ chars)
-- 🔴 Update default credentials immediately
-- 🔴 Use HTTPS/TLS for all communications
-- 🔴 Implement database instead of JSON storage
-- 🔴 Add rate limiting and request throttling
-- 🔴 Enable logging and monitoring
-- 🔴 Implement proper error handling without exposing stack traces
-- 🔴 Use secrets manager for API keys
-- 🔴 Add audit trails for user actions
-
----
-
-## 📡 External API Integration
+## External API Integration
 
 ### Finnhub Market Data
 ```javascript
@@ -272,7 +250,7 @@ EconRadar/
 
 ---
 
-## 🎨 UI/UX Features
+## UI/UX Features
 
 ### Design System
 - **Color Palette:** Dark theme with gold and blue accents
@@ -291,7 +269,7 @@ EconRadar/
 
 ---
 
-## 🧪 Testing
+## Testing
 
 ### Manual Testing Workflow
 1. Start backend and frontend
@@ -302,19 +280,9 @@ EconRadar/
 6. Modify configuration settings
 7. Verify data persistence across sessions
 
-### Integration Points to Test
-- [ ] JWT token generation and validation
-- [ ] Finnhub API connectivity and data accuracy
-- [ ] OpenRouter AI model responses
-- [ ] CORS and cross-origin requests
-- [ ] Static file serving
-- [ ] Data.json read/write operations
-- [ ] Chat session management
-- [ ] User profile updates
-
 ---
 
-## 🚢 Deployment
+## Deployment
 
 ### Local Network
 ```bash
@@ -340,7 +308,7 @@ gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:8000
 
 ---
 
-## 📊 Data Persistence
+## Data Persistence
 
 All user data is stored in `backend/data/data.json`:
 
@@ -360,7 +328,7 @@ All user data is stored in `backend/data/data.json`:
 
 ---
 
-## 🔄 Update & Maintenance
+## Update & Maintenance
 
 ### Updating Dependencies
 ```bash
@@ -382,33 +350,13 @@ find . -type d -name __pycache__ -exec rm -rf {} +
 
 ---
 
-## 📝 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please follow these guidelines:
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Commit changes: `git commit -m 'Add amazing feature'`
-4. Push to branch: `git push origin feature/amazing-feature`
-5. Open a Pull Request
-
----
-
-## 📞 Support & Contact
+## Support & Contact
 
 - **Issues:** [GitHub Issues](https://github.com/JoaoAntonio08/EconRadar/issues)
-- **Email:** [Contact via GitHub Profile]
-- **Documentation:** Comprehensive inline code comments provided
-
+- **Email:** [jabiffi08@gmail.com]
 ---
 
-## 🗺️ Roadmap
+## Roadmap
 
 - [ ] Database migration (PostgreSQL)
 - [ ] Multi-user support with role-based access
@@ -423,7 +371,7 @@ Contributions are welcome! Please follow these guidelines:
 
 ---
 
-## 📚 Additional Resources
+## Additional Resources
 
 - [FastAPI Documentation](https://fastapi.tiangolo.com/)
 - [Finnhub API Docs](https://finnhub.io/docs/api)
@@ -434,8 +382,8 @@ Contributions are welcome! Please follow these guidelines:
 
 <div align="center">
 
-**Built with ❤️ by [JoaoAntonio08](https://github.com/JoaoAntonio08)**
+**Built [JoaoAntonio08](https://github.com/JoaoAntonio08)**
 
-⭐ If this project helped you, please consider giving it a star on GitHub!
+If this project helped you, please consider giving it a star on GitHub!
 
 </div>
