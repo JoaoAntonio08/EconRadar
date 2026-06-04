@@ -149,7 +149,6 @@ window.erSubmitAuth = async function() {
 // Ao carregar a página, verifica se há sessão ativa
 document.addEventListener('DOMContentLoaded', () => {
   if (!isLoggedIn()) {
-    // Redireciona para landing se não logado (só no /app)
     if (window.location.pathname !== '/' && !window.location.pathname.includes('landing')) {
       window.location.href = '/';
     }
@@ -157,3 +156,28 @@ document.addEventListener('DOMContentLoaded', () => {
     window.dispatchEvent(new CustomEvent('er:loggedin'));
   }
 });
+
+// ── Portfolio ─────────────────────────────────────────────
+window.Portfolio = {
+  async get()               { return apiFetch('/portfolio'); },
+  async addAsset(asset)     { return apiFetch('/portfolio/assets', { method:'POST', body: JSON.stringify(asset) }); },
+  async removeAsset(id)     { return apiFetch(`/portfolio/assets/${id}`, { method:'DELETE' }); },
+  async setGoal(goal)       { return apiFetch('/portfolio/goal', { method:'PUT', body: JSON.stringify(goal) }); },
+};
+
+// ── Level / XP ────────────────────────────────────────────
+window.Level = {
+  async get()               { return apiFetch('/level'); },
+  async event(name)         { return apiFetch(`/level/event?event=${name}`, { method:'POST' }); },
+};
+
+// ── Jarvis (IA proativa) ──────────────────────────────────
+window.Jarvis = {
+  async insight(marketCtx, portfolioValue) {
+    return apiFetch('/jarvis/insight', {
+      method: 'POST',
+      body: JSON.stringify({ market_context: marketCtx, portfolio_value: portfolioValue })
+    });
+  },
+  async history() { return apiFetch('/jarvis/history'); },
+};
