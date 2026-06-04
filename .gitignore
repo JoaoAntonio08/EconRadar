@@ -1,0 +1,36 @@
+# ══════════════════════════════════════════════════════════════
+#  EconRadar — .gitignore
+# ══════════════════════════════════════════════════════════════
+
+# ── Secrete ────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Dados do usuário (gerados em runtime) ─────────────────────
+backend/data/data.json
+
+# ── Binários grandes — não versionar ──────────────────────────
+ngrok.exe
+ngrok
+
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# ── Sistema operacional ───────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Editores ──────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
