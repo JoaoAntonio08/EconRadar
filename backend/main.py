@@ -22,14 +22,14 @@ from pathlib import Path
 
 def _check_password(plain: str, hashed: str) -> bool:
     return _bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-from typing import Any
+from typing import Any, Optional
 
 # ── Configuração ───────────────────────────────────────────────────────────────
-SECRET_KEY    = os.getenv("SECRET_KEY", "econradar-secret-key-troque-isso")
+SECRET_KEY    = os.getenv("SECRET_KEY", "")
 ALGORITHM     = "HS256"
 TOKEN_HOURS   = int(os.getenv("TOKEN_EXPIRE_H", "24"))
-OR_KEY        = os.getenv("OPENROUTER_API_KEY", "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")
-FH_KEY        = os.getenv("FINNHUB_API_KEY", "d87jkq1r01qmhakg2qrgd87jkq1r01qmhakg2qs0")
+OR_KEY        = os.getenv("OPENROUTER_API_KEY", "")
+FH_KEY        = os.getenv("FINNHUB_API_KEY", "")
 OR_MODEL      = os.getenv("OR_MODEL", "nvidia/nemotron-3-nano-30b-a3b:free")
 ALLOWED_ENV    = os.getenv("ALLOWED_ORIGINS", "").strip()
 # Origens permitidas: localhost padrão + qualquer domínio ngrok + o que vier do .env
@@ -105,10 +105,13 @@ def login(body: LoginIn):
         raise HTTPException(status_code=401, detail="Usuário ou senha incorretos")
     if not _check_password(body.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Usuário ou senha incorretos")
+    result = _grant_xp(data, "login")
+    save_data(data)
     return {
         "access_token": create_token(),
         "token_type": "bearer",
         "display_name": data["profile"]["display_name"],
+        "level": result,
     }
 
 @app.get("/api/auth/me", dependencies=[Depends(verify_token)])
@@ -118,9 +121,9 @@ def me():
 
 # ── Perfil ─────────────────────────────────────────────────────────────────────
 class ProfileIn(BaseModel):
-    display_name:  str | None = None
-    investor_type: str | None = None
-    note:          str | None = None
+    display_name:  Optional[str] = None
+    investor_type: Optional[str] = None
+    note:          Optional[str] = None
     interests:     list[str] | None = None
 
 @app.get("/api/users/profile", dependencies=[Depends(verify_token)])
@@ -140,7 +143,7 @@ class ConfigIn(BaseModel):
     autorefresh:    bool  | None = None
     interval_sec:   int   | None = None
     currency:       str   | None = None
-    threshold:      float | None = None
+    threshold:      Optional[float] = None
     accent_color:   str   | None = None
     compact_mode:   bool  | None = None
     show_instab:    bool  | None = None
@@ -180,9 +183,9 @@ def apikey_exists(provider: str):
 
 # ── Chat (proxy OpenRouter) ────────────────────────────────────────────────────
 class SendIn(BaseModel):
-    session_id: int | None = None
+    session_id: Optional[int] = None
     message:    str
-    context:    str | None = None
+    context:    Optional[str] = None
     history:    list[dict] | None = None
 
 @app.get("/api/chat/sessions", dependencies=[Depends(verify_token)])
@@ -273,6 +276,7 @@ Responda em português, seja direto e analítico. Máximo 4 parágrafos."""
     if not profile.get("ai_used"):
         data["profile"]["ai_used"] = True
 
+    _grant_xp(data, "chat_message")
     save_data(data)
     return {"session_id": session["id"], "reply": reply}
 
@@ -500,10 +504,226 @@ async def proxy_finnhub_news(category: str = "general"):
     except Exception as e:
         return []
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  PORTFÓLIO PESSOAL (v1.1)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class PortfolioAsset(BaseModel):
+    id:        str           # ex: "btc", "usd"
+    name:      str
+    pair:      str
+    amount:    float         # quantidade (BTC, USD, etc.)
+    buy_price: float         # preço pago por unidade em BRL
+    buy_date:  Optional[str] = None
+
+class PortfolioGoal(BaseModel):
+    goal_amount:   Optional[float] = None
+    goal_label:    str   | None = None
+    goal_deadline: str   | None = None
+
+@app.get("/api/portfolio", dependencies=[Depends(verify_token)])
+def get_portfolio():
+    return load_data()["portfolio"]
+
+@app.post("/api/portfolio/assets", dependencies=[Depends(verify_token)])
+def add_asset(body: PortfolioAsset):
+    data = load_data()
+    assets = data["portfolio"]["assets"]
+    # substitui se já existir mesmo id
+    assets = [a for a in assets if a["id"] != body.id]
+    assets.append({
+        "id":        body.id,
+        "name":      body.name,
+        "pair":      body.pair,
+        "amount":    body.amount,
+        "buy_price": body.buy_price,
+        "buy_date":  body.buy_date or datetime.now().strftime("%Y-%m-%d"),
+        "added_at":  datetime.now().isoformat(),
+    })
+    data["portfolio"]["assets"] = assets
+    _grant_xp(data, "portfolio_add", 10)
+    save_data(data)
+    return {"ok": True}
+
+@app.delete("/api/portfolio/assets/{asset_id}", dependencies=[Depends(verify_token)])
+def remove_asset(asset_id: str):
+    data = load_data()
+    data["portfolio"]["assets"] = [a for a in data["portfolio"]["assets"] if a["id"] != asset_id]
+    save_data(data)
+    return {"ok": True}
+
+@app.put("/api/portfolio/goal", dependencies=[Depends(verify_token)])
+def update_goal(body: PortfolioGoal):
+    data = load_data()
+    for k, v in body.model_dump(exclude_none=True).items():
+        data["portfolio"][k] = v
+    save_data(data)
+    return {"ok": True}
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SISTEMA DE NÍVEIS / XP (v1.1)
+# ══════════════════════════════════════════════════════════════════════════════
+
+LEVEL_THRESHOLDS = {"iniciante": 0, "intermediario": 100, "avancado": 300}
+LEVEL_LABELS     = {
+    "iniciante":     "Iniciante",
+    "intermediario": "Intermediário",
+    "avancado":      "Avançado",
+}
+XP_EVENTS = {
+    "login":         5,
+    "chat_message":  8,
+    "portfolio_add": 10,
+    "alert_set":     5,
+    "profile_complete": 15,
+}
+
+def _grant_xp(data: dict, event: str, pts: Optional[int] = None) -> dict:
+    """Adiciona XP e atualiza nível. Retorna {xp, level, leveled_up}."""
+    pts = pts or XP_EVENTS.get(event, 0)
+    profile = data["profile"]
+    old_level = profile.get("level", "iniciante")
+    profile["xp"] = profile.get("xp", 0) + pts
+
+    new_level = old_level
+    for lvl, threshold in sorted(LEVEL_THRESHOLDS.items(), key=lambda x: -x[1]):
+        if profile["xp"] >= threshold:
+            new_level = lvl
+            break
+
+    profile["level"] = new_level
+    leveled_up = new_level != old_level
+    return {"xp": profile["xp"], "level": new_level, "leveled_up": leveled_up, "level_label": LEVEL_LABELS[new_level]}
+
+@app.get("/api/level", dependencies=[Depends(verify_token)])
+def get_level():
+    data = load_data()
+    p = data["profile"]
+    xp = p.get("xp", 0)
+    level = p.get("level", "iniciante")
+    # XP necessário para o próximo nível
+    next_thresholds = {k: v for k, v in LEVEL_THRESHOLDS.items() if v > LEVEL_THRESHOLDS.get(level, 0)}
+    next_xp = min(next_thresholds.values()) if next_thresholds else None
+    return {
+        "xp": xp,
+        "level": level,
+        "level_label": LEVEL_LABELS.get(level, "Iniciante"),
+        "next_level_xp": next_xp,
+        "progress_pct": int(min(100, (xp / next_xp * 100))) if next_xp else 100,
+    }
+
+@app.post("/api/level/event", dependencies=[Depends(verify_token)])
+def register_event(event: str):
+    data = load_data()
+    result = _grant_xp(data, event)
+    save_data(data)
+    return result
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  JARVIS — IA PROATIVA (v1.2)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class JarvisIn(BaseModel):
+    market_context: str        # JSON string com cotações atuais
+    portfolio_value: Optional[float] = None
+    last_insight_at: Optional[str] = None
+
+@app.post("/api/jarvis/insight", dependencies=[Depends(verify_token)])
+async def jarvis_insight(body: JarvisIn):
+    """
+    Gera um insight proativo baseado no portfólio + mercado + perfil.
+    A IA decide SE há algo relevante — pode retornar insight vazio.
+    """
+    data = load_data()
+    profile = data["profile"]
+    portfolio = data["portfolio"]
+    or_key = OR_KEY
+    if not or_key:
+        raise HTTPException(503, "Chave OpenRouter não configurada.")
+
+    name     = profile.get("display_name", "investidor")
+    inv_type = profile.get("investor_type", "moderado")
+    level    = profile.get("level", "iniciante")
+    assets   = portfolio.get("assets", [])
+    goal     = portfolio.get("goal_label", "")
+
+    portfolio_str = ""
+    if assets:
+        lines = [f"- {a['name']}: {a['amount']} unidades (comprado a R${a['buy_price']:.2f})" for a in assets]
+        portfolio_str = "Portfólio do usuário:\n" + "\n".join(lines)
+    else:
+        portfolio_str = "Usuário ainda não cadastrou portfólio."
+
+    prompt = f"""Você é o EconRadar, assessor financeiro pessoal de {name} (perfil {inv_type}, nível {level}).
+
+{portfolio_str}
+Meta financeira: {goal or 'não definida'}
+Contexto de mercado agora: {body.market_context[:800]}
+
+SUA TAREFA: analise SE há algo realmente relevante para avisar este investidor AGORA.
+Seja criterioso — só gere um insight se houver algo genuinamente útil e acionável.
+Se não houver nada relevante, retorne exatamente: {{"insight": "", "type": "none"}}
+
+Se houver algo relevante, retorne JSON com:
+- "insight": texto curto (máx 2 frases), direto, personalizado para {name}
+- "type": um de "oportunidade" | "alerta" | "dica" | "patrimonio"
+- "asset": ativo relacionado (ex: "btc") ou null
+- "urgency": "alta" | "media" | "baixa"
+
+Retorne APENAS o JSON, sem markdown, sem explicação."""
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {or_key}", "Content-Type": "application/json"},
+            json={"model": OR_MODEL,
+                  "messages": [
+                      {"role": "system", "content": "Você é um assessor financeiro. Responda APENAS com JSON válido."},
+                      {"role": "user",   "content": prompt}
+                  ],
+                  "max_tokens": 300, "temperature": 0.4}
+        )
+
+    if resp.status_code != 200:
+        raise HTTPException(502, f"Erro OpenRouter: {resp.text[:200]}")
+
+    resp_json = resp.json()
+    # OpenRouter pode retornar content=null quando o modelo usa tool_use ou recusa
+    try:
+        raw = resp_json["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError):
+        raw = ""
+
+    if not raw:
+        return {"insight": "", "type": "none"}
+
+    raw = raw.replace("```json","").replace("```","").strip()
+    match = re.search(r'\{[\s\S]*\}', raw)
+    if not match:
+        return {"insight": "", "type": "none"}
+
+    result = json.loads(match.group(0))
+
+    # Salva histórico de insights não-vazios
+    if result.get("insight"):
+        data["jarvis_insights"].append({
+            **result,
+            "generated_at": datetime.now().isoformat()
+        })
+        data["jarvis_insights"] = data["jarvis_insights"][-50:]
+        save_data(data)
+
+    return result
+
+@app.get("/api/jarvis/history", dependencies=[Depends(verify_token)])
+def jarvis_history():
+    data = load_data()
+    return list(reversed(data.get("jarvis_insights", [])[:20]))
+
 # ── Health ─────────────────────────────────────────────────────────────────────
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "1.0.0"}
+    return {"status": "ok", "version": "1.1.0"}
 
 # ── Iniciar direto com python main.py ──────────────────────────────────────────
 if __name__ == "__main__":
