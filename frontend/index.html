@@ -2825,7 +2825,7 @@ async function loadAll() {
 document.addEventListener('DOMContentLoaded', () => {
   // Se não logado, volta para a landing page
   if (typeof isLoggedIn === 'function' && !isLoggedIn()) {
-    window.location.href = '/';
+    window.location.href = '/landing.html';
     return;
   }
 
