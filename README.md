@@ -9,6 +9,10 @@
 
 ---
 
+Copyright (c) 2026 EconRadar Team
+
+Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+
 ## Overview
 
 **EconRadar** is a cutting-edge economic intelligence platform that empowers investors and traders with real-time market data, AI-driven sentiment analysis, and personalized portfolio monitoring. Built with modern technologies, the platform combines robust backend services with an intuitive, high-performance frontend interface.
@@ -96,8 +100,8 @@ Create a `.env` file in the `backend/` directory:
 # backend/.env
 SECRET_KEY=your-secret-key-here
 TOKEN_EXPIRE_H=24
-OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-FINNHUB_API_KEY=d87jkq1r01qmhakg2qrg
+OPENROUTER_API_KEY=your_openrouter_api_key
+FINNHUB_API_KEY=your_finnhub_api_key
 OR_MODEL=nvidia/nemotron-3-nano-30b-a3b:free
 ALLOWED_ORIGINS=http://localhost:8000,http://localhost:5500
 ```
@@ -354,21 +358,6 @@ find . -type d -name __pycache__ -exec rm -rf {} +
 
 - **Issues:** [GitHub Issues](https://github.com/JoaoAntonio08/EconRadar/issues)
 - **Email:** [jabiffi08@gmail.com]
----
-
-## Roadmap
-
-- [ ] Database migration (PostgreSQL)
-- [ ] Multi-user support with role-based access
-- [ ] Advanced portfolio analytics
-- [ ] Machine learning price predictions
-- [ ] Mobile app (React Native)
-- [ ] Webhook notifications
-- [ ] Custom technical indicators
-- [ ] Backtesting engine
-- [ ] API rate limiting and throttling
-- [ ] Docker containerization
-
 ---
 
 ## Additional Resources
