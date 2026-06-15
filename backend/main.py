@@ -1,40 +1,46 @@
 """
-EconRadar Backend — versão simples
-- Sem banco de dados
-- Usuário fixo: Admin / 12345
-- Dados salvos em data/data.json
-- Chaves de API ficam no servidor (seguras)
+EconRadar Backend — Versão 1.0 (Fundação Sólida)
+- Rate limiting via slowapi
+- Cache inteligente em memória
+- Indicadores técnicos (RSI, MACD, Bollinger)
+- Nível de experiência no perfil
+- Importação de carteira B3 via CSV
 """
 
 from dotenv import load_dotenv
 from pathlib import Path
 
-# Procura .env em backend/ e na raiz do projeto
 _env_paths = [
-    Path(__file__).parent / ".env",          # backend/.env
-    Path(__file__).parent.parent / ".env",   # raiz/.env
+    Path(__file__).parent / ".env",
+    Path(__file__).parent.parent / ".env",
 ]
 for _p in _env_paths:
     if _p.exists():
         load_dotenv(_p)
         break
 else:
-    load_dotenv()  # fallback padrão
+    load_dotenv()
 
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from jose import JWTError, jwt
 from datetime import datetime, timedelta, timezone
 import httpx, json, os, re, xml.etree.ElementTree as _ET, bcrypt as _bcrypt
 from pathlib import Path
+from typing import Any, Optional
+import time, math, io, csv
+
+# slowapi
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 def _check_password(plain: str, hashed: str) -> bool:
     return _bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-from typing import Any, Optional
 
 # ── Configuração ───────────────────────────────────────────────────────────────
 SECRET_KEY    = os.getenv("SECRET_KEY", "")
@@ -45,7 +51,6 @@ FH_KEY        = os.getenv("FINNHUB_API_KEY", "")
 OR_MODEL      = os.getenv("OR_MODEL", "google/gemma-4-31b-it:free")
 OR_MODEL_FALLBACK = os.getenv("OR_MODEL_FALLBACK", "nvidia/nemotron-3-ultra-550b-a55b:free")
 ALLOWED_ENV    = os.getenv("ALLOWED_ORIGINS", "").strip()
-# Origens permitidas: localhost padrão + qualquer domínio ngrok + o que vier do .env
 _default_origins = [
     "http://localhost:8000", "http://127.0.0.1:8000",
     "http://localhost:5500", "http://127.0.0.1:5500",
@@ -53,6 +58,43 @@ _default_origins = [
 ]
 ALLOWED = _default_origins + ([o.strip() for o in ALLOWED_ENV.split(",") if o.strip()] if ALLOWED_ENV else [])
 DATA_FILE     = Path(__file__).parent / "data" / "data.json"
+
+# ── Rate Limiter ───────────────────────────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address)
+
+# ── Cache Inteligente em Memória ───────────────────────────────────────────────
+class SimpleCache:
+    def __init__(self):
+        self._store: dict[str, dict] = {}
+
+    def get(self, key: str):
+        entry = self._store.get(key)
+        if not entry:
+            return None
+        if time.time() > entry["expires_at"]:
+            del self._store[key]
+            return None
+        return entry["value"]
+
+    def set(self, key: str, value: Any, ttl_seconds: int = 60):
+        self._store[key] = {
+            "value": value,
+            "expires_at": time.time() + ttl_seconds,
+        }
+
+    def invalidate(self, key: str):
+        self._store.pop(key, None)
+
+    def clear(self):
+        self._store.clear()
+
+    def size(self) -> int:
+        # clean expired first
+        now = time.time()
+        self._store = {k: v for k, v in self._store.items() if v["expires_at"] > now}
+        return len(self._store)
+
+cache = SimpleCache()
 
 # ── JSON Storage ───────────────────────────────────────────────────────────────
 def load_data() -> dict:
@@ -65,18 +107,15 @@ def save_data(data: dict):
 
 # ── OpenRouter helper com fallback ────────────────────────────────────────────
 def _extract_or_content(resp_json: dict) -> str:
-    """Extrai texto da resposta OpenRouter de forma robusta."""
     try:
         choices = resp_json.get("choices") or []
         if not choices:
             return ""
         msg = choices[0].get("message") or {}
-        # content pode ser string, None, ou lista (tool_use)
         content = msg.get("content")
         if isinstance(content, str):
             return content.strip()
         if isinstance(content, list):
-            # pega blocos de texto dentro da lista
             parts = [b.get("text","") for b in content if isinstance(b, dict) and b.get("type") == "text"]
             return " ".join(parts).strip()
     except Exception:
@@ -85,7 +124,6 @@ def _extract_or_content(resp_json: dict) -> str:
 
 async def _or_call(or_key: str, messages: list, max_tokens: int = 1000,
                    temperature: float = 0.5, timeout: int = 45) -> str:
-    """Chama OpenRouter com fallback automático se o modelo primário retornar vazio."""
     models_to_try = [OR_MODEL]
     for fb in [OR_MODEL_FALLBACK, "meta-llama/llama-3.3-70b-instruct:free"]:
         if fb and fb not in models_to_try:
@@ -102,8 +140,7 @@ async def _or_call(or_key: str, messages: list, max_tokens: int = 1000,
                           "max_tokens": max_tokens, "temperature": temperature}
                 )
                 if resp.status_code == 401:
-                    # Chave inválida — não adianta tentar outros modelos com a mesma chave
-                    raise HTTPException(401, "Chave OpenRouter inválida ou expirada. Gere uma nova em openrouter.ai/keys e atualize o .env ou Configurações.")
+                    raise HTTPException(401, "Chave OpenRouter inválida ou expirada.")
                 if resp.status_code == 404:
                     last_error = f"Modelo não encontrado ({model})"
                     continue
@@ -136,6 +173,19 @@ def verify_token(creds: HTTPAuthorizationCredentials = Depends(bearer)):
 
 # ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI(title="EconRadar API", version="1.0.0")
+app.state.limiter = limiter
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    retry = getattr(exc, "retry_after", 60)
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": "rate_limit",
+            "message": "Muitas requisições. Tente novamente em breve.",
+            "retry_after": retry
+        }
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -146,9 +196,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Arquivos estáticos (frontend) ─────────────────────────────────────────────
+# ── Arquivos estáticos ─────────────────────────────────────────────────────────
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
-
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 @app.get("/", include_in_schema=False)
@@ -169,7 +218,8 @@ class LoginIn(BaseModel):
     password: str
 
 @app.post("/api/auth/login")
-def login(body: LoginIn):
+@limiter.limit("10/minute")
+async def login(request: Request, body: LoginIn):
     data = load_data()
     user = data["user"]
     if body.username.strip().lower() != user["username"].lower():
@@ -192,10 +242,11 @@ def me():
 
 # ── Perfil ─────────────────────────────────────────────────────────────────────
 class ProfileIn(BaseModel):
-    display_name:  Optional[str] = None
-    investor_type: Optional[str] = None
-    note:          Optional[str] = None
-    interests:     list[str] | None = None
+    display_name:     Optional[str] = None
+    investor_type:    Optional[str] = None
+    note:             Optional[str] = None
+    interests:        list[str] | None = None
+    experience_level: Optional[str] = None   # "beginner" | "intermediate" | "advanced"
 
 @app.get("/api/users/profile", dependencies=[Depends(verify_token)])
 def get_profile():
@@ -204,7 +255,11 @@ def get_profile():
 @app.put("/api/users/profile", dependencies=[Depends(verify_token)])
 def update_profile(body: ProfileIn):
     data = load_data()
-    for k, v in body.model_dump(exclude_none=True).items():
+    allowed_exp = {"beginner", "intermediate", "advanced"}
+    updates = body.model_dump(exclude_none=True)
+    if "experience_level" in updates and updates["experience_level"] not in allowed_exp:
+        raise HTTPException(400, "experience_level inválido. Use: beginner, intermediate, advanced")
+    for k, v in updates.items():
         data["profile"][k] = v
     save_data(data)
     return {"ok": True}
@@ -236,7 +291,7 @@ def update_config(body: ConfigIn):
     save_data(data)
     return {"ok": True}
 
-# ── API Keys (salvas no servidor, nunca expostas) ──────────────────────────────
+# ── API Keys ───────────────────────────────────────────────────────────────────
 class ApiKeyIn(BaseModel):
     provider: str
     key:      str
@@ -244,7 +299,7 @@ class ApiKeyIn(BaseModel):
 @app.put("/api/users/apikeys", dependencies=[Depends(verify_token)])
 def upsert_apikey(body: ApiKeyIn):
     data = load_data()
-    data["api_keys"][body.provider] = body.key   # salvo no servidor, nunca retornado
+    data["api_keys"][body.provider] = body.key
     save_data(data)
     return {"ok": True}
 
@@ -252,7 +307,189 @@ def upsert_apikey(body: ApiKeyIn):
 def apikey_exists(provider: str):
     return {"exists": bool(load_data()["api_keys"].get(provider))}
 
-# ── Chat (proxy OpenRouter) ────────────────────────────────────────────────────
+# ── Cache Management ───────────────────────────────────────────────────────────
+@app.delete("/api/cache", dependencies=[Depends(verify_token)])
+def clear_cache():
+    cache.clear()
+    return {"ok": True, "message": "Cache limpo com sucesso."}
+
+@app.get("/api/cache/stats", dependencies=[Depends(verify_token)])
+def cache_stats():
+    return {"entries": cache.size()}
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  INDICADORES TÉCNICOS — Cálculo puro em Python
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _fh_candle(symbol: str, resolution: str = "D", count: int = 60) -> list[float]:
+    """Busca dados históricos do Finnhub e retorna lista de preços de fechamento."""
+    cache_key = f"candle:{symbol}:{resolution}:{count}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    now = int(time.time())
+    from_ts = now - (count * 86400 * 2)  # margem para fins de semana
+
+    data = load_data()
+    fh_key_rt = FH_KEY or data.get("api_keys", {}).get("finnhub", "")
+    params = {"symbol": symbol, "resolution": resolution, "from": from_ts, "to": now, "token": fh_key_rt}
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get("https://finnhub.io/api/v1/stock/candle", params=params)
+        if r.status_code != 200:
+            raise HTTPException(502, f"Finnhub candle error {r.status_code}")
+        result = r.json()
+        closes = result.get("c", [])
+        if not closes:
+            raise HTTPException(404, f"Sem dados históricos para {symbol}")
+        # Só aplica cache se habilitado
+        if data.get("config", {}).get("cache_enabled", True):
+            cache.set(cache_key, closes, ttl_seconds=60)
+        return closes
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Erro ao buscar candles: {str(e)[:100]}")
+
+def _calc_rsi(closes: list[float], period: int = 14) -> float:
+    if len(closes) < period + 1:
+        raise HTTPException(422, f"Dados insuficientes para RSI({period}): precisa de ao menos {period+1} candles")
+    changes = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+    gains = [max(c, 0) for c in changes]
+    losses = [abs(min(c, 0)) for c in changes]
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return round(100 - (100 / (1 + rs)), 2)
+
+def _calc_ema(closes: list[float], period: int) -> list[float]:
+    if len(closes) < period:
+        return []
+    k = 2 / (period + 1)
+    emas = [sum(closes[:period]) / period]
+    for price in closes[period:]:
+        emas.append(price * k + emas[-1] * (1 - k))
+    return emas
+
+def _calc_macd(closes: list[float]):
+    ema12 = _calc_ema(closes, 12)
+    ema26 = _calc_ema(closes, 26)
+    if not ema12 or not ema26:
+        raise HTTPException(422, "Dados insuficientes para MACD")
+    # Alinha os dois arrays pelo menor (ema26 é menor)
+    diff = len(ema12) - len(ema26)
+    ema12_aligned = ema12[diff:]
+    macd_line = [e12 - e26 for e12, e26 in zip(ema12_aligned, ema26)]
+    signal_line = _calc_ema(macd_line, 9)
+    if not signal_line:
+        raise HTTPException(422, "Dados insuficientes para linha de sinal MACD")
+    diff2 = len(macd_line) - len(signal_line)
+    macd_val   = round(macd_line[-1], 4)
+    signal_val = round(signal_line[-1], 4)
+    hist_val   = round(macd_val - signal_val, 4)
+    return macd_val, signal_val, hist_val
+
+def _calc_bollinger(closes: list[float], period: int = 20, std_dev: float = 2.0):
+    if len(closes) < period:
+        raise HTTPException(422, f"Dados insuficientes para Bollinger({period})")
+    window = closes[-period:]
+    middle = sum(window) / period
+    variance = sum((x - middle) ** 2 for x in window) / period
+    std = math.sqrt(variance)
+    upper = round(middle + std_dev * std, 4)
+    lower = round(middle - std_dev * std, 4)
+    return round(upper, 4), round(middle, 4), round(lower, 4)
+
+class IndicatorIn(BaseModel):
+    symbol: str
+    period: Optional[int] = None
+
+@app.post("/api/indicators/rsi", dependencies=[Depends(verify_token)])
+async def indicator_rsi(body: IndicatorIn):
+    period = body.period or 14
+    closes = await _fh_candle(body.symbol, count=max(100, period * 3))
+    rsi = _calc_rsi(closes, period)
+    signal = "overbought" if rsi >= 70 else ("oversold" if rsi <= 30 else "neutral")
+    return {"symbol": body.symbol, "rsi": rsi, "signal": signal, "period": period}
+
+@app.post("/api/indicators/macd", dependencies=[Depends(verify_token)])
+async def indicator_macd(body: IndicatorIn):
+    closes = await _fh_candle(body.symbol, count=200)
+    macd, signal, histogram = _calc_macd(closes)
+    trend = "bullish" if histogram > 0 else "bearish"
+    return {"symbol": body.symbol, "macd": macd, "signal": signal, "histogram": histogram, "trend": trend}
+
+@app.post("/api/indicators/bollinger", dependencies=[Depends(verify_token)])
+async def indicator_bollinger(body: IndicatorIn):
+    period = body.period or 20
+    closes = await _fh_candle(body.symbol, count=max(100, period * 3))
+    upper, middle, lower = _calc_bollinger(closes, period)
+    current = round(closes[-1], 4)
+    band_range = upper - lower
+    if band_range > 0:
+        rel = (current - lower) / band_range
+        if rel >= 0.9:
+            position = "near_upper"
+        elif rel <= 0.1:
+            position = "near_lower"
+        elif rel >= 0.5:
+            position = "above_middle"
+        else:
+            position = "below_middle"
+    else:
+        position = "above_middle"
+    return {
+        "symbol": body.symbol,
+        "upper": upper, "middle": middle, "lower": lower,
+        "current_price": current, "position": position,
+        "period": period
+    }
+
+@app.post("/api/indicators/all", dependencies=[Depends(verify_token)])
+async def indicator_all(body: IndicatorIn):
+    closes = await _fh_candle(body.symbol, count=200)
+
+    # RSI
+    try:
+        rsi_val = _calc_rsi(closes, 14)
+        rsi_sig = "overbought" if rsi_val >= 70 else ("oversold" if rsi_val <= 30 else "neutral")
+        rsi_result = {"rsi": rsi_val, "signal": rsi_sig, "period": 14}
+    except Exception as e:
+        rsi_result = {"error": str(e)}
+
+    # MACD
+    try:
+        macd, sig, hist = _calc_macd(closes)
+        macd_result = {"macd": macd, "signal": sig, "histogram": hist, "trend": "bullish" if hist > 0 else "bearish"}
+    except Exception as e:
+        macd_result = {"error": str(e)}
+
+    # Bollinger
+    try:
+        upper, middle, lower = _calc_bollinger(closes, 20)
+        current = round(closes[-1], 4)
+        band_range = upper - lower
+        if band_range > 0:
+            rel = (current - lower) / band_range
+            pos = "near_upper" if rel >= 0.9 else ("near_lower" if rel <= 0.1 else ("above_middle" if rel >= 0.5 else "below_middle"))
+        else:
+            pos = "above_middle"
+        boll_result = {"upper": upper, "middle": middle, "lower": lower, "current_price": current, "position": pos, "period": 20}
+    except Exception as e:
+        boll_result = {"error": str(e)}
+
+    return {"symbol": body.symbol, "rsi": rsi_result, "macd": macd_result, "bollinger": boll_result}
+
+# ── Chat ───────────────────────────────────────────────────────────────────────
 class SendIn(BaseModel):
     session_id: Optional[int] = None
     message:    str
@@ -290,12 +527,12 @@ def get_messages(session_id: int):
         raise HTTPException(404, "Sessão não encontrada")
     return session.get("messages", [])
 
-@app.post("/api/chat/send", dependencies=[Depends(verify_token)])
-async def send_message(body: SendIn):
+@app.post("/api/chat/send")
+@limiter.limit("20/minute")
+async def send_message(request: Request, body: SendIn, _=Depends(verify_token)):
     data = load_data()
     profile = data["profile"]
 
-    # Busca ou cria sessão
     if body.session_id:
         session = next((s for s in data["chat_sessions"] if s["id"] == body.session_id), None)
         if not session:
@@ -310,18 +547,25 @@ async def send_message(body: SendIn):
     inv  = profile.get("investor_type", "moderado")
     note = profile.get("note", "")
     ints = ", ".join(profile.get("interests", [])).upper()
+    exp  = profile.get("experience_level", "beginner")
+    exp_map = {
+        "beginner": "linguagem simples, sem jargões técnicos",
+        "intermediate": "dados técnicos com contexto explicado",
+        "advanced": "dados brutos e análise técnica direta, sem explicações adicionais"
+    }
+    exp_instruction = exp_map.get(exp, exp_map["beginner"])
 
     system_prompt = f"""Você é o EconRadar, consultor de mercados financeiros para {name}.
 Perfil do investidor: {inv}. Foco: {ints or 'não definido'}.{f' Nota: "{note}"' if note else ''}
+Nível de experiência: {exp} — use {exp_instruction}.
 {f'Contexto de mercado: {body.context}' if body.context else ''}
 Responda em português, seja direto e analítico. Máximo 4 parágrafos."""
 
     messages = (body.history or []) + [{"role": "user", "content": body.message}]
 
-    # Usa chave do usuário salva ou a do .env
     or_key = OR_KEY or load_data().get("api_keys", {}).get("openrouter", "")
     if not or_key:
-        raise HTTPException(503, "Chave OpenRouter não configurada. Verifique o .env ou Configurações.")
+        raise HTTPException(503, "Chave OpenRouter não configurada.")
 
     reply = await _or_call(
         or_key,
@@ -329,7 +573,6 @@ Responda em português, seja direto e analítico. Máximo 4 parágrafos."""
         max_tokens=1000, temperature=0.7, timeout=20
     )
 
-    # Salva mensagens
     now = datetime.now().isoformat()
     session["messages"].append({"role": "user",      "content": body.message, "created_at": now})
     session["messages"].append({"role": "assistant", "content": reply,        "created_at": now})
@@ -351,12 +594,21 @@ class SummaryIn(BaseModel):
     crit_count:   int
     assets_json:  Any = None
 
-@app.post("/api/summary/generate", dependencies=[Depends(verify_token)])
-async def generate_summary(body: SummaryIn):
+@app.post("/api/summary/generate")
+@limiter.limit("5/minute")
+async def generate_summary(request: Request, body: SummaryIn, _=Depends(verify_token)):
     data = load_data()
-    or_key = OR_KEY or load_data().get("api_keys", {}).get("openrouter", "")
+
+    # Cache do resumo (TTL 5 min)
+    cache_key = f"summary:{hash(body.context[:100])}"
+    if data.get("config", {}).get("cache_enabled", True):
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+    or_key = OR_KEY or data.get("api_keys", {}).get("openrouter", "")
     if not or_key:
-        raise HTTPException(503, "Chave OpenRouter não configurada. Verifique o .env ou Configurações.")
+        raise HTTPException(503, "Chave OpenRouter não configurada.")
 
     prompt = (
         f"Dados de mercado do fechamento: {body.context} | "
@@ -383,14 +635,17 @@ async def generate_summary(body: SummaryIn):
 
     parsed = json.loads(match.group(0))
 
-    # Salva histórico
     data["night_summaries"].append({
         "summary_text": parsed.get("resumo",""),
         "instab_score": body.instab_score,
         "generated_at": datetime.now().isoformat()
     })
-    data["night_summaries"] = data["night_summaries"][-30:]  # guarda os últimos 30
+    data["night_summaries"] = data["night_summaries"][-30:]
     save_data(data)
+
+    if data.get("config", {}).get("cache_enabled", True):
+        cache.set(cache_key, parsed, ttl_seconds=300)
+
     return parsed
 
 @app.get("/api/summary/history", dependencies=[Depends(verify_token)])
@@ -398,7 +653,7 @@ def summary_history():
     data = load_data()
     return list(reversed(data.get("night_summaries", [])))
 
-# ── Market Proxy (Finnhub) ─────────────────────────────────────────────────────
+# ── Market Proxy ───────────────────────────────────────────────────────────────
 async def _fh(path: str, params: dict, data: dict = None):
     fh_key_rt = FH_KEY or load_data().get("api_keys", {}).get("finnhub", "")
     params["token"] = fh_key_rt
@@ -414,8 +669,19 @@ async def _fh(path: str, params: dict, data: dict = None):
     return r.json()
 
 @app.get("/api/market/quote")
-async def market_quote(symbol: str):
-    return await _fh("/quote", {"symbol": symbol}, load_data())
+@limiter.limit("60/minute")
+async def market_quote(request: Request, symbol: str, _=Depends(verify_token)):
+    # Cache 60s para quotes
+    data = load_data()
+    cache_key = f"quote:{symbol}"
+    if data.get("config", {}).get("cache_enabled", True):
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+    result = await _fh("/quote", {"symbol": symbol}, data)
+    if data.get("config", {}).get("cache_enabled", True):
+        cache.set(cache_key, result, ttl_seconds=60)
+    return result
 
 @app.get("/api/market/forex")
 async def market_forex(base: str = "USD"):
@@ -425,11 +691,8 @@ async def market_forex(base: str = "USD"):
 async def market_news(category: str = "general"):
     return await _fh("/news", {"category": category}, load_data())
 
-
-# ── Proxy AwesomeAPI (forex/metais/ibov — CORS *) ─────────────────────────────
 @app.get("/api/proxy/awesome")
 async def proxy_awesome(pairs: str):
-    """Proxy para economia.awesomeapi.com.br — evita CORS no frontend."""
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             r = await client.get(f"https://economia.awesomeapi.com.br/json/last/{pairs}")
@@ -439,10 +702,8 @@ async def proxy_awesome(pairs: str):
         raise HTTPException(502, f"AwesomeAPI error: {r.status_code}")
     return r.json()
 
-# ── Proxy CoinGecko ────────────────────────────────────────────────────────────
 @app.get("/api/proxy/coingecko")
 async def proxy_coingecko(ids: str, vs_currencies: str = "usd,brl", include_24hr_change: str = "true"):
-    """Proxy para api.coingecko.com — evita CORS e rate-limit no frontend."""
     params = {"ids": ids, "vs_currencies": vs_currencies, "include_24hr_change": include_24hr_change}
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.get("https://api.coingecko.com/api/v3/simple/price", params=params)
@@ -450,10 +711,8 @@ async def proxy_coingecko(ids: str, vs_currencies: str = "usd,brl", include_24hr
         raise HTTPException(502, f"CoinGecko error: {r.status_code}")
     return r.json()
 
-# ── Proxy Yahoo Finance (stocks + indices + commodities) ────────────────────────
 @app.get("/api/proxy/yahoo")
 async def proxy_yahoo(symbols: str):
-    """Busca cotações via Yahoo Finance — suporta SPY, QQQ, DIA, ^BVSP, CL=F (WTI)"""
     syms = symbols.replace(' ','').split(',')[:10]
     yf_symbols = ','.join(syms)
     url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={yf_symbols}&fields=regularMarketPrice,regularMarketChangePercent,regularMarketPreviousClose"
@@ -466,9 +725,9 @@ async def proxy_yahoo(symbols: str):
             r = await client.get(url)
         if r.status_code != 200:
             raise HTTPException(502, f"Yahoo Finance error: {r.status_code}")
-        data = r.json()
+        ydata = r.json()
         results = {}
-        for q in data.get("quoteResponse", {}).get("result", []):
+        for q in ydata.get("quoteResponse", {}).get("result", []):
             sym = q.get("symbol","")
             results[sym] = {
                 "c":   q.get("regularMarketPrice", 0),
@@ -483,9 +742,6 @@ async def proxy_yahoo(symbols: str):
     except Exception as e:
         raise HTTPException(502, f"Yahoo Finance error: {str(e)[:100]}")
 
-# ── Proxy Finnhub quote ────────────────────────────────────────────────────────
-# Finnhub free tier blocks /quote for most symbols — returns empty or 403.
-# We map common symbols to AwesomeAPI pairs which work reliably.
 SYMBOL_MAP = {
     "SPY":  ("SPY500-BRL", "sp500"),
     "QQQ":  ("QQQ-BRL",    "nasdaq"),
@@ -497,17 +753,14 @@ SYMBOL_MAP = {
 
 @app.get("/api/proxy/finnhub/quote")
 async def proxy_finnhub_quote(symbol: str):
-    # Try Finnhub first; fall back gracefully on any error
     try:
         result = await _fh("/quote", {"symbol": symbol}, load_data())
         if result and result.get("c", 0) > 0:
             return result
     except HTTPException:
         pass
-    # Return a neutral placeholder so frontend doesn't crash
     return {"c": 0, "d": 0, "dp": 0, "h": 0, "l": 0, "o": 0, "pc": 0, "t": 0, "_unavailable": True}
 
-# ── Proxy Finnhub news (Google Finance RSS fallback) ─────────────────────────
 GNEWS_TOPICS = {
     "general": "https://news.google.com/rss/search?q=mercado+financeiro+economia&hl=pt-BR&gl=BR&ceid=BR:pt-419",
     "forex":   "https://news.google.com/rss/search?q=câmbio+dólar+euro+forex&hl=pt-BR&gl=BR&ceid=BR:pt-419",
@@ -517,7 +770,6 @@ GNEWS_TOPICS = {
 
 @app.get("/api/proxy/finnhub/news")
 async def proxy_finnhub_news(category: str = "general"):
-    # Try Finnhub first
     try:
         result = await _fh("/news", {"category": category}, load_data())
         if result and len(result) > 0:
@@ -525,7 +777,6 @@ async def proxy_finnhub_news(category: str = "general"):
     except HTTPException:
         pass
 
-    # Fallback: Google Finance RSS → same shape as Finnhub news items
     url = GNEWS_TOPICS.get(category, GNEWS_TOPICS["general"])
     try:
         async with httpx.AsyncClient(timeout=15, headers={"User-Agent": "Mozilla/5.0"}) as client:
@@ -533,9 +784,7 @@ async def proxy_finnhub_news(category: str = "general"):
         if r.status_code != 200:
             return []
         root = _ET.fromstring(r.text)
-        ns = {"media": "http://search.yahoo.com/mrss/"}
         items = []
-        import time
         for item in root.findall(".//item")[:20]:
             title   = (item.findtext("title") or "").strip()
             link    = (item.findtext("link")  or "").strip()
@@ -558,19 +807,19 @@ async def proxy_finnhub_news(category: str = "general"):
                 "url": link,
             })
         return items
-    except Exception as e:
+    except Exception:
         return []
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PORTFÓLIO PESSOAL (v1.1)
+#  PORTFÓLIO PESSOAL
 # ══════════════════════════════════════════════════════════════════════════════
 
 class PortfolioAsset(BaseModel):
-    id:        str           # ex: "btc", "usd"
+    id:        str
     name:      str
     pair:      str
-    amount:    float         # quantidade (BTC, USD, etc.)
-    buy_price: float         # preço pago por unidade em BRL
+    amount:    float
+    buy_price: float
     buy_date:  Optional[str] = None
 
 class PortfolioGoal(BaseModel):
@@ -586,7 +835,6 @@ def get_portfolio():
 def add_asset(body: PortfolioAsset):
     data = load_data()
     assets = data["portfolio"]["assets"]
-    # substitui se já existir mesmo id
     assets = [a for a in assets if a["id"] != body.id]
     assets.append({
         "id":        body.id,
@@ -618,7 +866,110 @@ def update_goal(body: PortfolioGoal):
     return {"ok": True}
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SISTEMA DE NÍVEIS / XP (v1.1)
+#  IMPORTAÇÃO DE CARTEIRA B3 VIA CSV
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/portfolio/import-csv", dependencies=[Depends(verify_token)])
+async def import_portfolio_csv(file: UploadFile = File(...)):
+    """
+    Importa extrato de posição da B3 em CSV.
+    Colunas esperadas: Produto, Instituição, Conta, Código de Negociação,
+                       Tipo, Escriturador, Quantidade, Quantidade Disponível,
+                       Quantidade Indisponível, Motivo
+    """
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(400, "Envie um arquivo .csv")
+
+    content = await file.read()
+    # Detecta encoding (B3 exporta em latin-1)
+    for enc in ("utf-8-sig", "latin-1", "utf-8"):
+        try:
+            text = content.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        raise HTTPException(400, "Não foi possível decodificar o arquivo. Salve como UTF-8.")
+
+    reader = csv.DictReader(io.StringIO(text), delimiter=";")
+
+    # Normaliza nomes de colunas (remove espaços, BOM, etc.)
+    def norm(s):
+        return s.strip().lstrip("\ufeff").lower()
+
+    positions = []
+    errors = []
+    row_num = 0
+    for row in reader:
+        row_num += 1
+        normalized = {norm(k): v.strip() for k, v in row.items() if k}
+
+        # Mapeamento flexível de colunas
+        symbol_raw  = normalized.get("código de negociação") or normalized.get("codigo de negociacao") or normalized.get("codigo") or ""
+        qty_raw     = normalized.get("quantidade disponível") or normalized.get("quantidade disponivel") or normalized.get("quantidade") or "0"
+        institution = normalized.get("instituição") or normalized.get("instituicao") or normalized.get("corretora") or ""
+        asset_type  = normalized.get("tipo") or ""
+
+        symbol = re.sub(r'[^A-Z0-9]', '', symbol_raw.upper())
+        if not symbol:
+            errors.append(f"Linha {row_num}: símbolo vazio, ignorada.")
+            continue
+
+        try:
+            qty_clean = re.sub(r'[^\d]', '', qty_raw)
+            quantity = int(qty_clean) if qty_clean else 0
+        except ValueError:
+            quantity = 0
+
+        if quantity <= 0:
+            errors.append(f"Linha {row_num}: {symbol} com quantidade zero/inválida, ignorada.")
+            continue
+
+        positions.append({
+            "symbol": symbol,
+            "quantity": quantity,
+            "institution": institution,
+            "type": asset_type,
+        })
+
+    if not positions:
+        raise HTTPException(422, f"Nenhuma posição válida encontrada no CSV. Erros: {'; '.join(errors[:5])}")
+
+    data = load_data()
+    # Garante que a chave existe
+    if "b3_positions" not in data["portfolio"]:
+        data["portfolio"]["b3_positions"] = []
+    data["portfolio"]["b3_positions"] = positions
+    data["portfolio"]["b3_imported_at"] = datetime.now().isoformat()
+    save_data(data)
+
+    return {
+        "ok": True,
+        "imported": len(positions),
+        "skipped": len(errors),
+        "positions": positions,
+        "warnings": errors[:10],
+    }
+
+@app.get("/api/portfolio/b3", dependencies=[Depends(verify_token)])
+def get_b3_positions():
+    data = load_data()
+    portfolio = data.get("portfolio", {})
+    return {
+        "positions": portfolio.get("b3_positions", []),
+        "imported_at": portfolio.get("b3_imported_at"),
+    }
+
+@app.delete("/api/portfolio/b3", dependencies=[Depends(verify_token)])
+def clear_b3_positions():
+    data = load_data()
+    data["portfolio"]["b3_positions"] = []
+    data["portfolio"].pop("b3_imported_at", None)
+    save_data(data)
+    return {"ok": True}
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SISTEMA DE NÍVEIS / XP
 # ══════════════════════════════════════════════════════════════════════════════
 
 LEVEL_THRESHOLDS = {"iniciante": 0, "intermediario": 100, "avancado": 300}
@@ -636,7 +987,6 @@ XP_EVENTS = {
 }
 
 def _grant_xp(data: dict, event: str, pts: Optional[int] = None) -> dict:
-    """Adiciona XP e atualiza nível. Retorna {xp, level, leveled_up}."""
     pts = pts or XP_EVENTS.get(event, 0)
     profile = data["profile"]
     old_level = profile.get("level", "iniciante")
@@ -658,7 +1008,6 @@ def get_level():
     p = data["profile"]
     xp = p.get("xp", 0)
     level = p.get("level", "iniciante")
-    # XP necessário para o próximo nível
     next_thresholds = {k: v for k, v in LEVEL_THRESHOLDS.items() if v > LEVEL_THRESHOLDS.get(level, 0)}
     next_xp = min(next_thresholds.values()) if next_thresholds else None
     return {
@@ -677,26 +1026,22 @@ def register_event(event: str):
     return result
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  JARVIS — IA PROATIVA (v1.2)
+#  JARVIS — IA PROATIVA
 # ══════════════════════════════════════════════════════════════════════════════
 
 class JarvisIn(BaseModel):
-    market_context: str        # JSON string com cotações atuais
+    market_context: str
     portfolio_value: Optional[float] = None
     last_insight_at: Optional[str] = None
 
 @app.post("/api/jarvis/insight", dependencies=[Depends(verify_token)])
 async def jarvis_insight(body: JarvisIn):
-    """
-    Gera um insight proativo baseado no portfólio + mercado + perfil.
-    A IA decide SE há algo relevante — pode retornar insight vazio.
-    """
     data = load_data()
     profile = data["profile"]
     portfolio = data["portfolio"]
-    or_key = OR_KEY or load_data().get("api_keys", {}).get("openrouter", "")
+    or_key = OR_KEY or data.get("api_keys", {}).get("openrouter", "")
     if not or_key:
-        raise HTTPException(503, "Chave OpenRouter não configurada. Verifique o .env ou Configurações.")
+        raise HTTPException(503, "Chave OpenRouter não configurada.")
 
     name     = profile.get("display_name", "investidor")
     inv_type = profile.get("investor_type", "moderado")
@@ -748,7 +1093,6 @@ Retorne APENAS o JSON, sem markdown, sem explicação."""
 
     result = json.loads(match.group(0))
 
-    # Salva histórico de insights não-vazios
     if result.get("insight"):
         data["jarvis_insights"].append({
             **result,
@@ -763,48 +1107,6 @@ Retorne APENAS o JSON, sem markdown, sem explicação."""
 def jarvis_history():
     data = load_data()
     return list(reversed(data.get("jarvis_insights", [])[:20]))
-
-# ── Health ─────────────────────────────────────────────────────────────────────
-@app.get("/api/health")
-def health():
-    return {"status": "ok", "version": "1.1.0"}
-
-@app.get("/api/health/keys", dependencies=[Depends(verify_token)])
-async def check_keys():
-    """Verifica se as chaves de API estão configuradas e válidas."""
-    data = load_data()
-    or_key = OR_KEY or data.get("api_keys", {}).get("openrouter", "")
-
-    result = {
-        "openrouter": {"configured": bool(or_key), "valid": None, "error": None},
-    }
-
-    if or_key:
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {or_key}", "Content-Type": "application/json"},
-                    json={"model": OR_MODEL,
-                          "messages": [{"role": "user", "content": "ok"}],
-                          "max_tokens": 1}
-                )
-            if r.status_code == 401:
-                result["openrouter"]["valid"] = False
-                result["openrouter"]["error"] = "Chave inválida ou expirada (401)"
-            elif r.status_code in (200, 400, 429, 404):
-                result["openrouter"]["valid"] = True
-            else:
-                result["openrouter"]["valid"] = False
-                result["openrouter"]["error"] = f"Erro {r.status_code}"
-        except Exception as e:
-            result["openrouter"]["valid"] = False
-            result["openrouter"]["error"] = str(e)[:100]
-    else:
-        result["openrouter"]["error"] = "Chave não configurada"
-
-    return result
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  v1.4 — SCORE DE MOMENTO
@@ -822,15 +1124,11 @@ class ScoreIn(BaseModel):
 
 @app.post("/api/score/moment", dependencies=[Depends(verify_token)])
 async def score_moment(body: ScoreIn):
-    """
-    Retorna um Score de Momento 0–100 para o ativo,
-    com breakdown de fatores e recomendação curta.
-    """
     data    = load_data()
     profile = data["profile"]
-    or_key = OR_KEY or load_data().get("api_keys", {}).get("openrouter", "")
+    or_key = OR_KEY or data.get("api_keys", {}).get("openrouter", "")
     if not or_key:
-        raise HTTPException(503, "Chave OpenRouter não configurada. Verifique o .env ou Configurações.")
+        raise HTTPException(503, "Chave OpenRouter não configurada.")
 
     inv_type = profile.get("investor_type", "moderado")
     level    = profile.get("level", "iniciante")
@@ -875,27 +1173,24 @@ Retorne APENAS este JSON (sem markdown):
     match = re.search(r'\{[\s\S]*\}', raw)
     if not match:
         raise HTTPException(502, f"Formato inválido: {raw[:100]}")
-
     return json.loads(match.group(0))
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  v1.4 — SIMULADOR DE CENÁRIOS
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ScenarioIn(BaseModel):
-    scenario_desc: str          # ex: "dólar sobe para R$7,00"
-    affected_assets: list[str]  # ids dos ativos afetados
-    portfolio_snapshot: str     # JSON string do portfólio atual
+    scenario_desc: str
+    affected_assets: list[str]
+    portfolio_snapshot: str
 
 @app.post("/api/scenario/simulate", dependencies=[Depends(verify_token)])
 async def simulate_scenario(body: ScenarioIn):
-    """Simula impacto de um cenário hipotético no portfólio."""
     data    = load_data()
     profile = data["profile"]
-    or_key = OR_KEY or load_data().get("api_keys", {}).get("openrouter", "")
+    or_key = OR_KEY or data.get("api_keys", {}).get("openrouter", "")
     if not or_key:
-        raise HTTPException(503, "Chave OpenRouter não configurada. Verifique o .env ou Configurações.")
+        raise HTTPException(503, "Chave OpenRouter não configurada.")
 
     name     = profile.get("display_name", "investidor")
     inv_type = profile.get("investor_type", "moderado")
@@ -933,27 +1228,24 @@ Retorne APENAS este JSON (sem markdown):
     match = re.search(r'\{[\s\S]*\}', raw)
     if not match:
         raise HTTPException(502, f"Formato inválido: {raw[:100]}")
-
     return json.loads(match.group(0))
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  v1.4 — RELATÓRIO MENSAL PDF
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ReportIn(BaseModel):
-    portfolio_snapshot: str     # JSON string do portfólio com P&L
-    market_context:     str     # resumo do mercado
-    period_label:       Optional[str] = None  # ex: "Maio 2025"
+    portfolio_snapshot: str
+    market_context:     str
+    period_label:       Optional[str] = None
 
 @app.post("/api/report/generate", dependencies=[Depends(verify_token)])
 async def generate_report(body: ReportIn):
-    """Gera relatório mensal em JSON (frontend converte para PDF via jsPDF)."""
     data    = load_data()
     profile = data["profile"]
-    or_key = OR_KEY or load_data().get("api_keys", {}).get("openrouter", "")
+    or_key = OR_KEY or data.get("api_keys", {}).get("openrouter", "")
     if not or_key:
-        raise HTTPException(503, "Chave OpenRouter não configurada. Verifique o .env ou Configurações.")
+        raise HTTPException(503, "Chave OpenRouter não configurada.")
 
     name     = profile.get("display_name", "Investidor")
     inv_type = profile.get("investor_type", "moderado")
@@ -988,7 +1280,6 @@ JSON exato (sem markdown, sem explicação):
     except json.JSONDecodeError as e:
         raise HTTPException(502, f"JSON incompleto - tente novamente. Detalhe: {str(e)[:80]}")
 
-    # Salva histórico
     data["night_summaries"].append({
         "summary_text": result.get("resumo_executivo", ""),
         "instab_score": 0,
@@ -999,7 +1290,6 @@ JSON exato (sem markdown, sem explicação):
     })
     data["night_summaries"] = data["night_summaries"][-30:]
     save_data(data)
-
     return result
 
 @app.get("/api/report/history", dependencies=[Depends(verify_token)])
@@ -1007,6 +1297,41 @@ def report_history():
     data = load_data()
     reports = [s for s in data.get("night_summaries", []) if s.get("type") == "monthly_report"]
     return list(reversed(reports[-12:]))
+
+# ── Health ─────────────────────────────────────────────────────────────────────
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "version": "1.0.0-foundation"}
+
+@app.get("/api/health/keys", dependencies=[Depends(verify_token)])
+async def check_keys():
+    data = load_data()
+    or_key = OR_KEY or data.get("api_keys", {}).get("openrouter", "")
+    result = {
+        "openrouter": {"configured": bool(or_key), "valid": None, "error": None},
+    }
+    if or_key:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {or_key}", "Content-Type": "application/json"},
+                    json={"model": OR_MODEL, "messages": [{"role": "user", "content": "ok"}], "max_tokens": 1}
+                )
+            if r.status_code == 401:
+                result["openrouter"]["valid"] = False
+                result["openrouter"]["error"] = "Chave inválida ou expirada (401)"
+            elif r.status_code in (200, 400, 429, 404):
+                result["openrouter"]["valid"] = True
+            else:
+                result["openrouter"]["valid"] = False
+                result["openrouter"]["error"] = f"Erro {r.status_code}"
+        except Exception as e:
+            result["openrouter"]["valid"] = False
+            result["openrouter"]["error"] = str(e)[:100]
+    else:
+        result["openrouter"]["error"] = "Chave não configurada"
+    return result
 
 # ── Iniciar direto com python main.py ──────────────────────────────────────────
 if __name__ == "__main__":
