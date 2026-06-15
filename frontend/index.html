@@ -331,6 +331,10 @@ canvas{display:block}
 .interest-tag{padding:6px 13px;border-radius:100px;border:1px solid var(--border2);font-size:12px;color:var(--text2);cursor:pointer;transition:.15s;user-select:none}
 .interest-tag:hover{border-color:var(--border2);color:var(--text1)}
 .interest-tag.on{border-color:var(--accent);color:var(--accent);background:rgba(79,141,255,.1)}
+.exp-level-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.exp-level-card{border:1px solid var(--border2);border-radius:10px;padding:10px 8px;text-align:center;cursor:pointer;transition:.15s;background:var(--bg2)}
+.exp-level-card:hover{border-color:var(--accent)}
+.exp-level-card.active{border-color:var(--accent);background:rgba(79,141,255,.1)}
 .profile-hero{text-align:center;padding:10px 0 20px}
 .profile-avatar-big{width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:26px;color:#fff;margin:0 auto 10px;position:relative;cursor:pointer}
 .profile-avatar-big:hover::after{content:'✎';position:absolute;inset:0;border-radius:50%;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;font-size:20px}
@@ -430,6 +434,10 @@ body.compact .instab-banner{padding:10px 14px;margin-bottom:12px}
   <div class="s-item" id="si-relatorio" onclick="openRelatorio()">
     <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
     <span class="label">Relatório</span>
+  </div>
+  <div class="s-item" id="si-carteira-b3" onclick="goPage('carteira-b3')">
+    <svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg>
+    <span class="label">Carteira B3</span>
   </div>
 
   <div class="s-bottom">
@@ -1077,6 +1085,65 @@ body.compact .instab-banner{padding:10px 14px;margin-bottom:12px}
 </div>
 
 
+
+<!-- PÁGINA CARTEIRA B3 -->
+<div class="page" id="page-carteira-b3">
+<div class="content" style="max-width:1100px;margin:0 auto">
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:24px;flex-wrap:wrap">
+    <div>
+      <div style="font-family:var(--font-d);font-size:22px;font-weight:700;color:var(--text1);margin-bottom:4px">Minha Carteira B3</div>
+      <div style="font-size:13px;color:var(--text3)">Importe seu extrato de posição da B3 para visualizar seus ativos.</div>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <label id="b3ImportLabel" style="background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;border-radius:100px;padding:9px 18px;color:#fff;font-size:13px;font-weight:500;cursor:pointer;font-family:var(--font-b);display:inline-flex;align-items:center;gap:6px">
+        📂 Importar CSV da B3
+        <input type="file" id="b3CsvInput" accept=".csv" style="display:none" onchange="handleB3CsvImport(this)">
+      </label>
+      <button onclick="clearB3Portfolio()" style="background:none;border:1px solid var(--border2);border-radius:100px;padding:9px 18px;color:var(--text2);font-size:13px;cursor:pointer;font-family:var(--font-b)">🗑 Limpar carteira</button>
+    </div>
+  </div>
+
+  <!-- Info de importação -->
+  <div id="b3ImportInfo" style="display:none;background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin-bottom:20px;font-size:12px;color:var(--text3)">
+    <span id="b3ImportedAt"></span>
+  </div>
+
+  <!-- Loading -->
+  <div id="b3Loading" style="display:none;text-align:center;padding:60px 20px;color:var(--text3);font-size:13px">
+    <div style="font-size:32px;margin-bottom:12px">⏳</div>
+    Carregando posições...
+  </div>
+
+  <!-- Empty state -->
+  <div id="b3Empty" style="text-align:center;padding:80px 20px;color:var(--text3)">
+    <div style="font-size:48px;margin-bottom:16px">📋</div>
+    <div style="font-size:16px;font-weight:600;color:var(--text2);margin-bottom:8px">Nenhuma posição importada</div>
+    <div style="font-size:13px;max-width:400px;margin:0 auto">Acesse o site da B3, exporte seu extrato de posição em CSV e importe aqui para visualizar seus ativos.</div>
+    <div style="margin-top:16px;font-size:11px;color:var(--text3)">Suporta o formato padrão de extrato da B3 (separador: ponto e vírgula)</div>
+  </div>
+
+  <!-- Tabela de posições -->
+  <div id="b3Table" style="display:none">
+    <div style="background:var(--bg1);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr style="background:var(--bg2);border-bottom:1px solid var(--border)">
+            <th style="padding:12px 16px;text-align:left;font-size:11px;font-weight:600;color:var(--text3);letter-spacing:.5px">ATIVO</th>
+            <th style="padding:12px 16px;text-align:right;font-size:11px;font-weight:600;color:var(--text3);letter-spacing:.5px">QUANTIDADE</th>
+            <th style="padding:12px 16px;text-align:left;font-size:11px;font-weight:600;color:var(--text3);letter-spacing:.5px">INSTITUIÇÃO</th>
+            <th style="padding:12px 16px;text-align:left;font-size:11px;font-weight:600;color:var(--text3);letter-spacing:.5px">TIPO</th>
+            <th style="padding:12px 16px;text-align:right;font-size:11px;font-weight:600;color:var(--text3);letter-spacing:.5px">PREÇO ATUAL</th>
+            <th style="padding:12px 16px;text-align:right;font-size:11px;font-weight:600;color:var(--text3);letter-spacing:.5px">VALOR EST.</th>
+          </tr>
+        </thead>
+        <tbody id="b3TableBody"></tbody>
+      </table>
+    </div>
+    <div id="b3Summary" style="margin-top:14px;display:flex;gap:12px;flex-wrap:wrap"></div>
+  </div>
+</div>
+</div>
+
 <!-- MODAL OVERLAY -->
 <div class="modal-ov" id="modalOv" onclick="closeModalOv(event)">
 
@@ -1141,7 +1208,10 @@ body.compact .instab-banner{padding:10px 14px;margin-bottom:12px}
         <div class="pref-section">
           <div class="pref-label">Cache</div>
           <div class="pref-row"><div class="pref-row-info"><div class="pref-row-title">Usar dados em cache</div><div class="pref-row-sub">Exibe últimos dados enquanto atualiza</div></div><div class="toggle on" id="tog-cache" onclick="togglePref('cache',this)"></div></div>
-          <div style="margin-top:10px"><button onclick="clearAppCache()" style="background:none;border:1px solid var(--border2);border-radius:8px;padding:8px 16px;color:var(--text2);font-size:12px;cursor:pointer;font-family:var(--font-b)">🗑 Limpar cache local</button></div>
+          <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+            <button onclick="clearAppCache()" style="background:none;border:1px solid var(--border2);border-radius:8px;padding:8px 16px;color:var(--text2);font-size:12px;cursor:pointer;font-family:var(--font-b)">🗑 Limpar cache local</button>
+            <button onclick="clearServerCache()" style="background:none;border:1px solid var(--border2);border-radius:8px;padding:8px 16px;color:var(--text2);font-size:12px;cursor:pointer;font-family:var(--font-b)">🔄 Limpar cache servidor</button>
+          </div>
         </div>
       </div>
       <div id="cfgTab-appar" style="display:none">
@@ -1199,6 +1269,26 @@ body.compact .instab-banner{padding:10px 14px;margin-bottom:12px}
             <option value="arrojado">🚀 Arrojado — aceita mais volatilidade</option>
             <option value="especulador">⚡ Especulador — alta volatilidade, alto potencial</option>
           </select>
+        </div>
+        <div style="margin-top:12px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:8px">Nível de experiência — como a IA se comunica com você</div>
+          <div class="exp-level-grid" id="expLevelGrid">
+            <div class="exp-level-card active" data-level="beginner" onclick="selectExpLevel(this)">
+              <div style="font-size:18px;margin-bottom:4px">📗</div>
+              <div style="font-weight:600;font-size:12px;color:var(--text1)">Iniciante</div>
+              <div style="font-size:10px;color:var(--text3);margin-top:3px;line-height:1.4">Linguagem simples, sem jargões</div>
+            </div>
+            <div class="exp-level-card" data-level="intermediate" onclick="selectExpLevel(this)">
+              <div style="font-size:18px;margin-bottom:4px">📘</div>
+              <div style="font-weight:600;font-size:12px;color:var(--text1)">Intermediário</div>
+              <div style="font-size:10px;color:var(--text3);margin-top:3px;line-height:1.4">Dados técnicos com contexto</div>
+            </div>
+            <div class="exp-level-card" data-level="advanced" onclick="selectExpLevel(this)">
+              <div style="font-size:18px;margin-bottom:4px">📙</div>
+              <div style="font-weight:600;font-size:12px;color:var(--text1)">Avançado</div>
+              <div style="font-size:10px;color:var(--text3);margin-top:3px;line-height:1.4">Dados brutos, sem explicações extras</div>
+            </div>
+          </div>
         </div>
       </div>
       <div class="pref-section">
@@ -2038,6 +2128,7 @@ function goPage(page) {
   if(page==='mercados') setTimeout(refreshMktPage, 100);
   if(page==='alertas') refreshAlertsPage();
   if(page==='noticias') refreshNewsPage();
+  if(page==='carteira-b3') loadB3Portfolio();
 }
 
 // ══════════════════════════════════════════════════
@@ -2647,6 +2738,7 @@ async function loadProfile() {
     userProfile.sessions   = data.sessions_count || 1;
     userProfile.alertsSeen = data.alerts_seen || 0;
     userProfile.aiUsed     = data.ai_used || false;
+    userProfile.experienceLevel = data.experience_level || 'beginner';
   } catch(e) {
     console.warn('Perfil não carregado do servidor:', e.message);
   }
@@ -2696,6 +2788,11 @@ function loadProfileModal() {
     else tag.classList.remove('on');
   });
 
+  // Sync experience level
+  document.querySelectorAll('#expLevelGrid .exp-level-card').forEach(card => {
+    card.classList.toggle('active', card.dataset.level === (userProfile.experienceLevel || 'beginner'));
+  });
+
   document.getElementById('stat-assets').textContent = userProfile.interests.length;
   checkBadges();
 }
@@ -2710,13 +2807,15 @@ async function saveProfile() {
   userProfile.type      = document.getElementById('profile-type').value;
   userProfile.note      = document.getElementById('profile-note').value.trim();
   userProfile.interests = [...document.querySelectorAll('#interestGrid .interest-tag.on')].map(t => t.dataset.id);
+  userProfile.experienceLevel = document.querySelector('#expLevelGrid .exp-level-card.active')?.dataset.level || 'beginner';
 
   try {
     await Profile.update({
-      display_name:  userProfile.name,
-      investor_type: userProfile.type,
-      note:          userProfile.note,
-      interests:     userProfile.interests,
+      display_name:     userProfile.name,
+      investor_type:    userProfile.type,
+      note:             userProfile.note,
+      interests:        userProfile.interests,
+      experience_level: userProfile.experienceLevel,
     });
   } catch(e) {
     showToast('Erro ao salvar perfil: ' + e.message);
@@ -2838,6 +2937,136 @@ async function saveConfig() {
 function clearAppCache() {
   showToast('Sessão encerrada. Recarregando…');
   Auth.logout();
+}
+
+async function clearServerCache() {
+  try {
+    await apiFetch('/cache', { method: 'DELETE' });
+    showToast('Cache do servidor limpo!');
+  } catch(e) {
+    showToast('Erro ao limpar cache: ' + e.message);
+  }
+}
+
+function selectExpLevel(card) {
+  document.querySelectorAll('#expLevelGrid .exp-level-card').forEach(c => c.classList.remove('active'));
+  card.classList.add('active');
+}
+
+// ══════════════════════════════════════════════════
+//  CARTEIRA B3
+// ══════════════════════════════════════════════════
+
+async function loadB3Portfolio() {
+  const loading = document.getElementById('b3Loading');
+  const empty   = document.getElementById('b3Empty');
+  const table   = document.getElementById('b3Table');
+  const info    = document.getElementById('b3ImportInfo');
+  loading.style.display = 'block';
+  empty.style.display   = 'none';
+  table.style.display   = 'none';
+  info.style.display    = 'none';
+
+  try {
+    const data = await apiFetch('/portfolio/b3');
+    loading.style.display = 'none';
+    const positions = data.positions || [];
+
+    if (!positions.length) {
+      empty.style.display = 'block';
+      return;
+    }
+
+    if (data.imported_at) {
+      const dt = new Date(data.imported_at).toLocaleString('pt-BR');
+      document.getElementById('b3ImportedAt').textContent = `📅 Importado em: ${dt} — ${positions.length} posição(ões)`;
+      info.style.display = 'block';
+    }
+
+    // Render table
+    const tbody = document.getElementById('b3TableBody');
+    tbody.innerHTML = '';
+    let totalEst = 0;
+    let loadedCount = 0;
+
+    for (const pos of positions) {
+      const tr = document.createElement('tr');
+      tr.style.borderBottom = '1px solid var(--border)';
+      tr.innerHTML = `
+        <td style="padding:12px 16px">
+          <div style="font-weight:600;font-size:13px;color:var(--text1)">${pos.symbol}</div>
+        </td>
+        <td style="padding:12px 16px;text-align:right;font-size:13px;color:var(--text1)">${pos.quantity.toLocaleString('pt-BR')}</td>
+        <td style="padding:12px 16px;font-size:12px;color:var(--text2)">${pos.institution || '—'}</td>
+        <td style="padding:12px 16px;font-size:12px;color:var(--text3)">${pos.type || '—'}</td>
+        <td style="padding:12px 16px;text-align:right;font-size:12px;color:var(--text3)" id="b3price-${pos.symbol}">—</td>
+        <td style="padding:12px 16px;text-align:right;font-size:12px;color:var(--text3)" id="b3val-${pos.symbol}">—</td>
+      `;
+      tbody.appendChild(tr);
+
+      // Try to get current price from Finnhub
+      fetchB3Price(pos.symbol, pos.quantity);
+    }
+
+    table.style.display = 'block';
+
+  } catch(e) {
+    loading.style.display = 'none';
+    empty.style.display = 'block';
+    console.warn('Erro ao carregar carteira B3:', e.message);
+  }
+}
+
+async function fetchB3Price(symbol, qty) {
+  try {
+    const data = await apiFetch(`/proxy/finnhub/quote?symbol=${symbol}`);
+    if (data && data.c && !data._unavailable) {
+      const price = data.c;
+      const value = price * qty;
+      const priceEl = document.getElementById(`b3price-${symbol}`);
+      const valEl   = document.getElementById(`b3val-${symbol}`);
+      if (priceEl) priceEl.innerHTML = `<span style="color:var(--text1)">R$ ${price.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>`;
+      if (valEl)   valEl.innerHTML   = `<span style="color:var(--accent)">R$ ${value.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>`;
+    }
+  } catch(e) {}
+}
+
+async function handleB3CsvImport(input) {
+  const file = input.files[0];
+  if (!file) return;
+  showToast('Importando CSV...');
+  const formData = new FormData();
+  formData.append('file', file);
+  try {
+    const token = getToken();
+    const r = await fetch('/api/portfolio/import-csv', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: formData
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Erro na importação');
+    showToast(`✅ ${data.imported} posição(ões) importada(s)!`);
+    if (data.warnings && data.warnings.length) {
+      console.warn('Avisos da importação B3:', data.warnings);
+    }
+    input.value = '';
+    loadB3Portfolio();
+  } catch(e) {
+    showToast('Erro ao importar CSV: ' + e.message);
+    input.value = '';
+  }
+}
+
+async function clearB3Portfolio() {
+  if (!confirm('Remover todas as posições importadas da B3?')) return;
+  try {
+    await apiFetch('/portfolio/b3', { method: 'DELETE' });
+    showToast('Carteira B3 limpa.');
+    loadB3Portfolio();
+  } catch(e) {
+    showToast('Erro ao limpar carteira: ' + e.message);
+  }
 }
 
 // ══════════════════════════════════════════════════
