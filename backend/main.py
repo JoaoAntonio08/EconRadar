@@ -7,7 +7,19 @@ EconRadar Backend — versão simples
 """
 
 from dotenv import load_dotenv
-load_dotenv()
+from pathlib import Path
+
+# Procura .env em backend/ e na raiz do projeto
+_env_paths = [
+    Path(__file__).parent / ".env",          # backend/.env
+    Path(__file__).parent.parent / ".env",   # raiz/.env
+]
+for _p in _env_paths:
+    if _p.exists():
+        load_dotenv(_p)
+        break
+else:
+    load_dotenv()  # fallback padrão
 
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,7 +42,8 @@ ALGORITHM     = "HS256"
 TOKEN_HOURS   = int(os.getenv("TOKEN_EXPIRE_H", "24"))
 OR_KEY        = os.getenv("OPENROUTER_API_KEY", "")
 FH_KEY        = os.getenv("FINNHUB_API_KEY", "")
-OR_MODEL      = os.getenv("OR_MODEL", "nvidia/nemotron-3-nano-30b-a3b:free")
+OR_MODEL      = os.getenv("OR_MODEL", "google/gemma-4-31b-it:free")
+OR_MODEL_FALLBACK = os.getenv("OR_MODEL_FALLBACK", "nvidia/nemotron-3-ultra-550b-a55b:free")
 ALLOWED_ENV    = os.getenv("ALLOWED_ORIGINS", "").strip()
 # Origens permitidas: localhost padrão + qualquer domínio ngrok + o que vier do .env
 _default_origins = [
@@ -49,6 +62,64 @@ def load_data() -> dict:
 def save_data(data: dict):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+
+# ── OpenRouter helper com fallback ────────────────────────────────────────────
+def _extract_or_content(resp_json: dict) -> str:
+    """Extrai texto da resposta OpenRouter de forma robusta."""
+    try:
+        choices = resp_json.get("choices") or []
+        if not choices:
+            return ""
+        msg = choices[0].get("message") or {}
+        # content pode ser string, None, ou lista (tool_use)
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            # pega blocos de texto dentro da lista
+            parts = [b.get("text","") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+            return " ".join(parts).strip()
+    except Exception:
+        pass
+    return ""
+
+async def _or_call(or_key: str, messages: list, max_tokens: int = 1000,
+                   temperature: float = 0.5, timeout: int = 45) -> str:
+    """Chama OpenRouter com fallback automático se o modelo primário retornar vazio."""
+    models_to_try = [OR_MODEL]
+    for fb in [OR_MODEL_FALLBACK, "meta-llama/llama-3.3-70b-instruct:free"]:
+        if fb and fb not in models_to_try:
+            models_to_try.append(fb)
+
+    last_error = "IA não retornou resposta"
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for model in models_to_try:
+            try:
+                resp = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {or_key}", "Content-Type": "application/json"},
+                    json={"model": model, "messages": messages,
+                          "max_tokens": max_tokens, "temperature": temperature}
+                )
+                if resp.status_code == 401:
+                    # Chave inválida — não adianta tentar outros modelos com a mesma chave
+                    raise HTTPException(401, "Chave OpenRouter inválida ou expirada. Gere uma nova em openrouter.ai/keys e atualize o .env ou Configurações.")
+                if resp.status_code == 404:
+                    last_error = f"Modelo não encontrado ({model})"
+                    continue
+                if resp.status_code != 200:
+                    last_error = f"Erro OpenRouter ({model}): {resp.text[:200]}"
+                    continue
+                text = _extract_or_content(resp.json())
+                if text:
+                    return text
+                last_error = f"IA ({model}) não retornou resposta"
+            except (httpx.ReadTimeout, httpx.ConnectTimeout):
+                last_error = f"Timeout ao chamar OpenRouter ({model})"
+            except Exception as e:
+                last_error = str(e)[:150]
+
+    raise HTTPException(502, last_error)
 
 # ── JWT ────────────────────────────────────────────────────────────────────────
 bearer = HTTPBearer()
@@ -248,22 +319,15 @@ Responda em português, seja direto e analítico. Máximo 4 parágrafos."""
     messages = (body.history or []) + [{"role": "user", "content": body.message}]
 
     # Usa chave do usuário salva ou a do .env
-    or_key = OR_KEY
+    or_key = OR_KEY or load_data().get("api_keys", {}).get("openrouter", "")
     if not or_key:
-        raise HTTPException(503, "Chave OpenRouter não configurada.")
+        raise HTTPException(503, "Chave OpenRouter não configurada. Verifique o .env ou Configurações.")
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {or_key}", "Content-Type": "application/json"},
-            json={"model": OR_MODEL, "messages": [{"role":"system","content":system_prompt}] + messages,
-                  "max_tokens": 1000, "temperature": 0.7}
-        )
-
-    if resp.status_code != 200:
-        raise HTTPException(502, f"Erro OpenRouter: {resp.text[:200]}")
-
-    reply = resp.json()["choices"][0]["message"]["content"]
+    reply = await _or_call(
+        or_key,
+        messages=[{"role": "system", "content": system_prompt}] + messages,
+        max_tokens=1000, temperature=0.7, timeout=20
+    )
 
     # Salva mensagens
     now = datetime.now().isoformat()
@@ -290,9 +354,9 @@ class SummaryIn(BaseModel):
 @app.post("/api/summary/generate", dependencies=[Depends(verify_token)])
 async def generate_summary(body: SummaryIn):
     data = load_data()
-    or_key = OR_KEY
+    or_key = OR_KEY or load_data().get("api_keys", {}).get("openrouter", "")
     if not or_key:
-        raise HTTPException(503, "Chave OpenRouter não configurada.")
+        raise HTTPException(503, "Chave OpenRouter não configurada. Verifique o .env ou Configurações.")
 
     prompt = (
         f"Dados de mercado do fechamento: {body.context} | "
@@ -304,22 +368,14 @@ async def generate_summary(body: SummaryIn):
         '{"ativo":"ATIVO3","motivo":"motivo curto","direcao":"neutro"}]}'
     )
 
-    async with httpx.AsyncClient(timeout=45) as client:
-        resp = await client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {or_key}", "Content-Type": "application/json"},
-            json={"model": OR_MODEL,
-                  "messages": [
-                      {"role": "system", "content": "Você é um analista financeiro. Responda APENAS com JSON válido."},
-                      {"role": "user", "content": prompt}
-                  ],
-                  "max_tokens": 2000, "temperature": 0.3}
-        )
-
-    if resp.status_code != 200:
-        raise HTTPException(502, f"Erro OpenRouter: {resp.text[:200]}")
-
-    raw = resp.json()["choices"][0]["message"]["content"].strip()
+    raw = await _or_call(
+        or_key,
+        messages=[
+            {"role": "system", "content": "Você é um analista financeiro. Responda APENAS com JSON válido."},
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=600, temperature=0.3, timeout=20
+    )
     raw = raw.replace("```json","").replace("```","").strip()
     match = re.search(r'\{[\s\S]*\}', raw)
     if not match:
@@ -344,7 +400,8 @@ def summary_history():
 
 # ── Market Proxy (Finnhub) ─────────────────────────────────────────────────────
 async def _fh(path: str, params: dict, data: dict = None):
-    params["token"] = FH_KEY
+    fh_key_rt = FH_KEY or load_data().get("api_keys", {}).get("finnhub", "")
+    params["token"] = fh_key_rt
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             r = await client.get(f"https://finnhub.io/api/v1{path}", params=params)
@@ -637,9 +694,9 @@ async def jarvis_insight(body: JarvisIn):
     data = load_data()
     profile = data["profile"]
     portfolio = data["portfolio"]
-    or_key = OR_KEY
+    or_key = OR_KEY or load_data().get("api_keys", {}).get("openrouter", "")
     if not or_key:
-        raise HTTPException(503, "Chave OpenRouter não configurada.")
+        raise HTTPException(503, "Chave OpenRouter não configurada. Verifique o .env ou Configurações.")
 
     name     = profile.get("display_name", "investidor")
     inv_type = profile.get("investor_type", "moderado")
@@ -672,29 +729,16 @@ Se houver algo relevante, retorne JSON com:
 
 Retorne APENAS o JSON, sem markdown, sem explicação."""
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {or_key}", "Content-Type": "application/json"},
-            json={"model": OR_MODEL,
-                  "messages": [
-                      {"role": "system", "content": "Você é um assessor financeiro. Responda APENAS com JSON válido."},
-                      {"role": "user",   "content": prompt}
-                  ],
-                  "max_tokens": 300, "temperature": 0.4}
-        )
-
-    if resp.status_code != 200:
-        raise HTTPException(502, f"Erro OpenRouter: {resp.text[:200]}")
-
-    resp_json = resp.json()
-    # OpenRouter pode retornar content=null quando o modelo usa tool_use ou recusa
     try:
-        raw = resp_json["choices"][0]["message"]["content"] or ""
-    except (KeyError, IndexError, TypeError):
-        raw = ""
-
-    if not raw:
+        raw = await _or_call(
+            or_key,
+            messages=[
+                {"role": "system", "content": "Você é um assessor financeiro. Responda APENAS com JSON válido."},
+                {"role": "user",   "content": prompt}
+            ],
+            max_tokens=300, temperature=0.4, timeout=15
+        )
+    except HTTPException:
         return {"insight": "", "type": "none"}
 
     raw = raw.replace("```json","").replace("```","").strip()
@@ -724,6 +768,245 @@ def jarvis_history():
 @app.get("/api/health")
 def health():
     return {"status": "ok", "version": "1.1.0"}
+
+@app.get("/api/health/keys", dependencies=[Depends(verify_token)])
+async def check_keys():
+    """Verifica se as chaves de API estão configuradas e válidas."""
+    data = load_data()
+    or_key = OR_KEY or data.get("api_keys", {}).get("openrouter", "")
+
+    result = {
+        "openrouter": {"configured": bool(or_key), "valid": None, "error": None},
+    }
+
+    if or_key:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {or_key}", "Content-Type": "application/json"},
+                    json={"model": OR_MODEL,
+                          "messages": [{"role": "user", "content": "ok"}],
+                          "max_tokens": 1}
+                )
+            if r.status_code == 401:
+                result["openrouter"]["valid"] = False
+                result["openrouter"]["error"] = "Chave inválida ou expirada (401)"
+            elif r.status_code in (200, 400, 429, 404):
+                result["openrouter"]["valid"] = True
+            else:
+                result["openrouter"]["valid"] = False
+                result["openrouter"]["error"] = f"Erro {r.status_code}"
+        except Exception as e:
+            result["openrouter"]["valid"] = False
+            result["openrouter"]["error"] = str(e)[:100]
+    else:
+        result["openrouter"]["error"] = "Chave não configurada"
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  v1.4 — SCORE DE MOMENTO
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ScoreIn(BaseModel):
+    asset_id:   str
+    asset_name: str
+    pair:       str
+    price:      float
+    chg_pct:    float
+    high_hist:  Optional[str] = None
+    low_hist:   Optional[str] = None
+    var_30d:    Optional[float] = None
+
+@app.post("/api/score/moment", dependencies=[Depends(verify_token)])
+async def score_moment(body: ScoreIn):
+    """
+    Retorna um Score de Momento 0–100 para o ativo,
+    com breakdown de fatores e recomendação curta.
+    """
+    data    = load_data()
+    profile = data["profile"]
+    or_key = OR_KEY or load_data().get("api_keys", {}).get("openrouter", "")
+    if not or_key:
+        raise HTTPException(503, "Chave OpenRouter não configurada. Verifique o .env ou Configurações.")
+
+    inv_type = profile.get("investor_type", "moderado")
+    level    = profile.get("level", "iniciante")
+
+    prompt = f"""Você é um analista financeiro quantitativo. Calcule o Score de Momento para o ativo abaixo.
+
+Ativo: {body.asset_name} ({body.pair})
+Preço atual: {body.price}
+Variação hoje: {body.chg_pct:+.2f}%
+Variação 30 dias: {body.var_30d:+.1f}% (estimada)
+Máxima histórica: {body.high_hist or 'desconhecida'}
+Mínima histórica: {body.low_hist or 'desconhecida'}
+Perfil do investidor: {inv_type} (nível {level})
+
+Analise:
+1. Tendência de curto prazo (variação hoje vs 30d)
+2. Distância do preço em relação ao histórico (se próximo de máxima = sinal de atenção)
+3. Adequação ao perfil do investidor
+
+Retorne APENAS este JSON (sem markdown):
+{{
+  "score": <número 0-100>,
+  "label": "<Comprar|Aguardar|Reduzir>",
+  "color": "<green|amber|red>",
+  "resumo": "<1 frase direta e personalizada>",
+  "fatores": [
+    {{"nome": "Tendência", "valor": <0-100>, "desc": "<curto texto>"}},
+    {{"nome": "Posição histórica", "valor": <0-100>, "desc": "<curto texto>"}},
+    {{"nome": "Adequação ao perfil", "valor": <0-100>, "desc": "<curto texto>"}}
+  ]
+}}"""
+
+    raw = await _or_call(
+        or_key,
+        messages=[
+            {"role": "system", "content": "Analista financeiro. Responda APENAS JSON válido."},
+            {"role": "user",   "content": prompt}
+        ],
+        max_tokens=400, temperature=0.3, timeout=15
+    )
+    raw = raw.replace("```json", "").replace("```", "").strip()
+    match = re.search(r'\{[\s\S]*\}', raw)
+    if not match:
+        raise HTTPException(502, f"Formato inválido: {raw[:100]}")
+
+    return json.loads(match.group(0))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  v1.4 — SIMULADOR DE CENÁRIOS
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ScenarioIn(BaseModel):
+    scenario_desc: str          # ex: "dólar sobe para R$7,00"
+    affected_assets: list[str]  # ids dos ativos afetados
+    portfolio_snapshot: str     # JSON string do portfólio atual
+
+@app.post("/api/scenario/simulate", dependencies=[Depends(verify_token)])
+async def simulate_scenario(body: ScenarioIn):
+    """Simula impacto de um cenário hipotético no portfólio."""
+    data    = load_data()
+    profile = data["profile"]
+    or_key = OR_KEY or load_data().get("api_keys", {}).get("openrouter", "")
+    if not or_key:
+        raise HTTPException(503, "Chave OpenRouter não configurada. Verifique o .env ou Configurações.")
+
+    name     = profile.get("display_name", "investidor")
+    inv_type = profile.get("investor_type", "moderado")
+
+    prompt = f"""Você é um analista de risco financeiro. Simule o impacto do cenário abaixo no portfólio.
+
+Cenário hipotético: "{body.scenario_desc}"
+Portfólio atual: {body.portfolio_snapshot[:600]}
+Ativos afetados mencionados: {', '.join(body.affected_assets)}
+Perfil do investidor: {name} ({inv_type})
+
+Analise o impacto provável em cada ativo do portfólio e no total.
+
+Retorne APENAS este JSON (sem markdown):
+{{
+  "cenario": "<resumo do cenário em 1 frase>",
+  "impacto_total": "<positivo|negativo|neutro>",
+  "variacao_estimada_pct": <número, ex: -12.5>,
+  "narrativa": "<2 frases explicando o raciocínio>",
+  "ativos": [
+    {{"id": "<id>", "nome": "<nome>", "impacto_pct": <número>, "explicacao": "<curto>"}}
+  ],
+  "recomendacao": "<1 ação prática para o investidor>"
+}}"""
+
+    raw = await _or_call(
+        or_key,
+        messages=[
+            {"role": "system", "content": "Analista de risco. Responda APENAS JSON válido."},
+            {"role": "user",   "content": prompt}
+        ],
+        max_tokens=500, temperature=0.4, timeout=20
+    )
+    raw = raw.replace("```json", "").replace("```", "").strip()
+    match = re.search(r'\{[\s\S]*\}', raw)
+    if not match:
+        raise HTTPException(502, f"Formato inválido: {raw[:100]}")
+
+    return json.loads(match.group(0))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  v1.4 — RELATÓRIO MENSAL PDF
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ReportIn(BaseModel):
+    portfolio_snapshot: str     # JSON string do portfólio com P&L
+    market_context:     str     # resumo do mercado
+    period_label:       Optional[str] = None  # ex: "Maio 2025"
+
+@app.post("/api/report/generate", dependencies=[Depends(verify_token)])
+async def generate_report(body: ReportIn):
+    """Gera relatório mensal em JSON (frontend converte para PDF via jsPDF)."""
+    data    = load_data()
+    profile = data["profile"]
+    or_key = OR_KEY or load_data().get("api_keys", {}).get("openrouter", "")
+    if not or_key:
+        raise HTTPException(503, "Chave OpenRouter não configurada. Verifique o .env ou Configurações.")
+
+    name     = profile.get("display_name", "Investidor")
+    inv_type = profile.get("investor_type", "moderado")
+    level    = profile.get("level", "iniciante")
+    goal     = data["portfolio"].get("goal_label", "")
+    period   = body.period_label or datetime.now().strftime("%B %Y")
+
+    prompt = f"""Assessor financeiro de {name}. Gere relatório mensal em JSON.
+
+Período: {period} | Perfil: {inv_type} | Meta: {goal or 'não definida'}
+Portfólio: {body.portfolio_snapshot[:400]}
+Mercado: {body.market_context[:200]}
+
+JSON exato (sem markdown, sem explicação):
+{{"titulo":"Relatório EconRadar — {period}","investidor":"{name}","periodo":"{period}","resumo_executivo":"2 frases sobre desempenho","destaques":[{{"tipo":"positivo","texto":"ponto positivo"}},{{"tipo":"atencao","texto":"ponto de atenção"}}],"analise_portfolio":"1 parágrafo sobre os ativos","oportunidades":"1 frase sobre oportunidades","riscos":"1 frase sobre riscos","recomendacao_mes":"1 ação concreta","nota_perfil":"observação para perfil {inv_type}"}}"""
+
+    raw = await _or_call(
+        or_key,
+        messages=[
+            {"role": "system", "content": "Assessor financeiro. Responda APENAS JSON válido, sem markdown."},
+            {"role": "user",   "content": prompt}
+        ],
+        max_tokens=1200, temperature=0.4, timeout=30
+    )
+    raw = raw.replace("```json", "").replace("```", "").strip()
+    match = re.search(r'\{[\s\S]*\}', raw)
+    if not match:
+        raise HTTPException(502, f"Formato inválido: {raw[:100]}")
+
+    try:
+        result = json.loads(match.group(0))
+    except json.JSONDecodeError as e:
+        raise HTTPException(502, f"JSON incompleto - tente novamente. Detalhe: {str(e)[:80]}")
+
+    # Salva histórico
+    data["night_summaries"].append({
+        "summary_text": result.get("resumo_executivo", ""),
+        "instab_score": 0,
+        "generated_at": datetime.now().isoformat(),
+        "type": "monthly_report",
+        "period": period,
+        "full_report": result
+    })
+    data["night_summaries"] = data["night_summaries"][-30:]
+    save_data(data)
+
+    return result
+
+@app.get("/api/report/history", dependencies=[Depends(verify_token)])
+def report_history():
+    data = load_data()
+    reports = [s for s in data.get("night_summaries", []) if s.get("type") == "monthly_report"]
+    return list(reversed(reports[-12:]))
 
 # ── Iniciar direto com python main.py ──────────────────────────────────────────
 if __name__ == "__main__":
