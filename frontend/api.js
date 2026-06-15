@@ -181,3 +181,39 @@ window.Jarvis = {
   },
   async history() { return apiFetch('/jarvis/history'); },
 };
+
+// ── Score de Momento (v1.4) ───────────────────────────────
+window.Score = {
+  async moment(asset) {
+    return apiFetch('/score/moment', { method:'POST', body: JSON.stringify(asset) });
+  }
+};
+
+// ── Simulador de Cenários (v1.4) ──────────────────────────
+window.Scenario = {
+  async simulate(desc, affectedAssets, portfolioSnapshot) {
+    return apiFetch('/scenario/simulate', {
+      method: 'POST',
+      body: JSON.stringify({
+        scenario_desc:      desc,
+        affected_assets:    affectedAssets,
+        portfolio_snapshot: portfolioSnapshot,
+      })
+    });
+  }
+};
+
+// ── Relatório Mensal (v1.4) ───────────────────────────────
+window.Report = {
+  async generate(portfolioSnapshot, marketContext, periodLabel) {
+    return apiFetch('/report/generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        portfolio_snapshot: portfolioSnapshot,
+        market_context:     marketContext,
+        period_label:       periodLabel || null,
+      })
+    });
+  },
+  async history() { return apiFetch('/report/history'); }
+};

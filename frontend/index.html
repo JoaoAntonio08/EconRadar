@@ -381,6 +381,12 @@ body.compact .instab-banner{padding:10px 14px;margin-bottom:12px}
 .nc-footer{font-size:10px;color:var(--text3);border-top:1px solid var(--border);padding-top:10px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px}
 .nc-regen{font-size:11px;color:var(--accent);cursor:pointer;transition:.14s;background:none;border:none;font-family:var(--font-b);padding:0;display:flex;align-items:center;gap:4px}
 .nc-regen:hover{opacity:.75}
+
+/* ── v1.4 Score / Scenario / Report ── */
+.scen-sugg{font-size:11px;padding:4px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:100px;color:var(--text2);cursor:pointer;transition:.15s;font-family:var(--font-b)}
+.scen-sugg:hover{background:var(--bg4);color:var(--text1)}
+.score-fator{display:flex;align-items:center;gap:6px;padding:5px 8px;background:var(--bg2);border-radius:7px;border:1px solid var(--border);flex:1;min-width:120px}
+.score-fator-bar{height:3px;border-radius:2px;margin-top:3px}
 </style>
 </head>
 <body>
@@ -421,7 +427,7 @@ body.compact .instab-banner{padding:10px 14px;margin-bottom:12px}
     <svg viewBox="0 0 24 24"><path d="M12 2a5 5 0 0 1 5 5c0 1.8-.95 3.37-2.37 4.26L16 21H8l1.37-9.74A5 5 0 0 1 7 7a5 5 0 0 1 5-5z"/><circle cx="12" cy="7" r="1.5" fill="currentColor" stroke="none"/></svg>
     <span class="label">Consultor</span>
   </div>
-  <div class="s-item" id="si-relatorio" onclick="showToast('Relatório mensal — em breve na v1.4!')">
+  <div class="s-item" id="si-relatorio" onclick="openRelatorio()">
     <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
     <span class="label">Relatório</span>
   </div>
@@ -443,11 +449,117 @@ body.compact .instab-banner{padding:10px 14px;margin-bottom:12px}
 </aside>
 
 <div class="drw-ov"
-<div class="drw-ov"s="drw-ov" id="drwOv" onclick="closeDrawer()"></div>
+<div class="drw-ov" id="drwOv" onclick="closeDrawer()"></div>
 <div class="drawer" id="drawer">
   <div class="drw-hd"><div class="drw-title"> Personalizar Dashboard</div><div class="drw-close" onclick="closeDrawer()">✕</div></div>
   <div class="drw-body" id="drwBody"></div>
   <div class="drw-footer"><button class="btn-apply" onclick="applyDrawer()">Aplicar</button><button class="btn-reset" onclick="resetDrawer()">Restaurar padrão</button></div>
+</div>
+
+<!-- ══ DRAWER RELATÓRIO MENSAL ══ -->
+<div class="drw-ov" id="relOv" onclick="closeRelatorio()" style="z-index:302"></div>
+<div id="relDrawer" style="position:fixed;top:0;right:0;bottom:0;width:680px;max-width:95vw;background:var(--bg1);border-left:1px solid var(--border2);z-index:303;display:flex;flex-direction:column;transform:translateX(100%);transition:.28s cubic-bezier(.4,0,.2,1)">
+
+  <!-- Header fixo -->
+  <div style="padding:18px 22px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+    <div style="display:flex;align-items:center;gap:10px">
+      <div style="width:32px;height:32px;border-radius:9px;background:rgba(79,141,255,.15);display:flex;align-items:center;justify-content:center;font-size:16px">📊</div>
+      <div>
+        <div style="font-family:var(--font-d);font-size:15px;font-weight:700;color:var(--text1)">Relatório Mensal</div>
+        <div style="font-size:11px;color:var(--text3)">Análise da carteira gerada pela IA</div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <button id="btnGerarRelatorio" onclick="gerarRelatorio()" style="display:flex;align-items:center;gap:6px;padding:8px 15px;background:var(--accent);border:none;border-radius:9px;color:#fff;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--font-b)">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a5 5 0 0 1 5 5c0 1.8-.95 3.37-2.37 4.26L16 21H8l1.37-9.74A5 5 0 0 1 7 7a5 5 0 0 1 5-5z"/><circle cx="12" cy="7" r="1.5" fill="currentColor" stroke="none"/></svg>
+        Gerar relatório
+      </button>
+      <div class="drw-close" onclick="closeRelatorio()">✕</div>
+    </div>
+  </div>
+
+  <!-- Corpo com scroll -->
+  <div style="flex:1;overflow-y:auto;padding:18px 22px 30px" id="relDrawerBody">
+
+    <!-- Loading -->
+    <div id="relatorio-loading" style="display:none;padding:80px 20px;text-align:center">
+      <div class="am-ai-loading" style="justify-content:center;margin-bottom:12px"><div class="am-dots"><span></span><span></span><span></span></div></div>
+      <div style="font-size:13px;color:var(--text3)">Analisando sua carteira e gerando o relatório…</div>
+    </div>
+
+    <!-- Relatório gerado -->
+    <div id="relatorio-content" style="display:none;margin-bottom:24px">
+
+      <!-- Hero: título + resumo -->
+      <div class="wcard" style="padding:18px;margin-bottom:14px;background:linear-gradient(135deg,rgba(79,141,255,.10),rgba(79,141,255,.02));border-color:rgba(79,141,255,.2)">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+          <div style="flex:1;min-width:0">
+            <div id="rel-titulo" style="font-family:var(--font-d);font-size:15px;font-weight:700;color:var(--text1)"></div>
+            <div id="rel-investidor" style="font-size:11px;color:var(--text3);margin-top:2px"></div>
+          </div>
+          <button onclick="downloadRelatorio()" style="flex-shrink:0;display:flex;align-items:center;gap:5px;padding:6px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text2);font-size:11px;font-weight:600;cursor:pointer;font-family:var(--font-b)">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Baixar PDF
+          </button>
+        </div>
+        <div id="rel-resumo" style="font-size:12px;color:var(--text2);line-height:1.8;padding:12px 14px;background:var(--bg2);border-radius:9px;border-left:3px solid var(--accent)"></div>
+      </div>
+
+      <!-- Destaques -->
+      <div id="rel-destaques" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px"></div>
+
+      <!-- Análise do portfólio -->
+      <div class="wcard" style="padding:16px;margin-bottom:10px">
+        <div style="font-size:11px;font-weight:700;color:var(--text1);margin-bottom:10px;display:flex;align-items:center;gap:5px;text-transform:uppercase;letter-spacing:.05em">
+          <span>📈</span> Análise do portfólio
+        </div>
+        <div id="rel-analise" style="font-size:12px;color:var(--text2);line-height:1.8;white-space:pre-line"></div>
+      </div>
+
+      <!-- Oportunidades + Riscos lado a lado -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+        <div class="wcard" style="padding:16px">
+          <div style="font-size:11px;font-weight:700;color:var(--text1);margin-bottom:8px;display:flex;align-items:center;gap:5px;text-transform:uppercase;letter-spacing:.05em">
+            <span>🔭</span> Oportunidades
+          </div>
+          <div id="rel-oportunidades" style="font-size:12px;color:var(--text2);line-height:1.7"></div>
+        </div>
+        <div class="wcard" style="padding:16px">
+          <div style="font-size:11px;font-weight:700;color:var(--amber);margin-bottom:8px;display:flex;align-items:center;gap:5px;text-transform:uppercase;letter-spacing:.05em">
+            <span>⚠️</span> Riscos
+          </div>
+          <div id="rel-riscos" style="font-size:12px;color:var(--text2);line-height:1.7"></div>
+        </div>
+      </div>
+
+      <!-- Recomendação + Nota -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:4px">
+        <div class="wcard" style="padding:16px;background:rgba(34,201,138,.05);border-color:rgba(34,201,138,.25)">
+          <div style="font-size:11px;font-weight:700;color:var(--green);margin-bottom:8px;display:flex;align-items:center;gap:5px;text-transform:uppercase;letter-spacing:.05em">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            Recomendação
+          </div>
+          <div id="rel-recomendacao" style="font-size:13px;color:var(--text1);font-weight:500;line-height:1.6"></div>
+        </div>
+        <div class="wcard" style="padding:16px;background:rgba(79,141,255,.04);border-color:rgba(79,141,255,.15)">
+          <div style="font-size:11px;font-weight:700;color:var(--accent);margin-bottom:8px;display:flex;align-items:center;gap:5px;text-transform:uppercase;letter-spacing:.05em">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            Nota do assessor
+          </div>
+          <div id="rel-nota-perfil" style="font-size:12px;color:var(--text2);line-height:1.7;font-style:italic"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Histórico -->
+    <div>
+      <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">Relatórios anteriores</div>
+      <div id="relatorio-historico" style="display:flex;flex-direction:column;gap:7px">
+        <div style="font-size:12px;color:var(--text3)">Nenhum relatório gerado ainda.</div>
+      </div>
+    </div>
+
+  </div>
 </div>
 
 <div class="main">
@@ -873,9 +985,14 @@ body.compact .instab-banner{padding:10px 14px;margin-bottom:12px}
     <div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
         <div style="font-size:13px;font-weight:600;color:var(--text1)">Meu Portfólio</div>
-        <button onclick="openAddAsset()" style="display:flex;align-items:center;gap:5px;padding:6px 12px;background:var(--accent);border:none;border-radius:8px;color:#fff;font-size:11px;font-weight:600;cursor:pointer;font-family:var(--font-b)">
-          + Adicionar ativo
-        </button>
+    <div style="display:flex;gap:8px">
+          <button onclick="openScenario()" style="display:flex;align-items:center;gap:5px;padding:6px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text2);font-size:11px;font-weight:500;cursor:pointer;font-family:var(--font-b)">
+            ⚡ E se…?
+          </button>
+          <button onclick="openAddAsset()" style="display:flex;align-items:center;gap:5px;padding:6px 12px;background:var(--accent);border:none;border-radius:8px;color:#fff;font-size:11px;font-weight:600;cursor:pointer;font-family:var(--font-b)">
+            + Adicionar ativo
+          </button>
+        </div>
       </div>
       <div id="portfolio-list">
         <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:32px;text-align:center;color:var(--text3);font-size:13px">
@@ -909,7 +1026,56 @@ body.compact .instab-banner{padding:10px 14px;margin-bottom:12px}
 
 </div>
 </div>
-</div></div>
+</div>
+
+
+
+
+
+<!-- Modal Simulador de Cenários (v1.4) -->
+<div class="am-ov" id="scenarioOv" onclick="if(event.target===this)closeScenario()">
+  <div class="am-box" style="max-width:580px">
+    <div class="am-hd">
+      <div class="am-id">
+        <div class="am-dot" style="background:var(--accent2)"></div>
+        <div><div class="am-pair">Simulação</div><div class="am-name">E se…? Simulador de cenários</div></div>
+      </div>
+      <div class="am-close" onclick="closeScenario()">✕</div>
+    </div>
+    <div style="padding:18px 20px">
+      <div style="font-size:12px;color:var(--text3);margin-bottom:10px">Descreva um cenário hipotético e veja o impacto estimado no seu portfólio.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px" id="scenario-suggestions">
+        <button onclick="setScenario(this)" class="scen-sugg">💵 Dólar sobe para R$7,00</button>
+        <button onclick="setScenario(this)" class="scen-sugg">📉 Ibovespa cai 15%</button>
+        <button onclick="setScenario(this)" class="scen-sugg">🪙 Bitcoin cai 30%</button>
+        <button onclick="setScenario(this)" class="scen-sugg">🏦 Selic sobe 2 pontos</button>
+        <button onclick="setScenario(this)" class="scen-sugg">🌍 Crise global de crédito</button>
+      </div>
+      <textarea id="scenario-input" rows="3" placeholder="Ex: O Fed corta juros 0,5% e o dólar cai para R$5,50..." style="width:100%;padding:10px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text1);font-size:13px;resize:vertical;box-sizing:border-box;font-family:var(--font-b)"></textarea>
+      <button onclick="runScenario()" style="width:100%;margin-top:10px;padding:10px;background:var(--accent);border:none;border-radius:9px;color:#fff;font-size:13px;font-weight:600;cursor:pointer;font-family:var(--font-b)">Simular impacto</button>
+    </div>
+    <!-- Resultado -->
+    <div id="scenario-loading" style="display:none;padding:20px;text-align:center">
+      <div class="am-ai-loading" style="justify-content:center"><div class="am-dots"><span></span><span></span><span></span></div></div>
+      <div style="font-size:12px;color:var(--text3);margin-top:8px">Analisando impacto…</div>
+    </div>
+    <div id="scenario-result" style="display:none;padding:0 20px 20px">
+      <div style="height:1px;background:var(--border);margin-bottom:14px"></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <div id="sc-impacto-badge" style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:100px;border:1px solid"></div>
+        <div id="sc-variacao" style="font-family:var(--font-d);font-size:20px;font-weight:700"></div>
+        <div style="font-size:11px;color:var(--text3)">no portfólio total</div>
+      </div>
+      <div id="sc-narrativa" style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:12px;padding:10px;background:var(--bg2);border-radius:8px"></div>
+      <div id="sc-ativos" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px"></div>
+      <div style="padding:10px 12px;background:rgba(34,201,138,.06);border:1px solid rgba(34,201,138,.2);border-radius:8px">
+        <div style="font-size:10px;color:var(--green);font-weight:600;margin-bottom:3px">✓ Recomendação</div>
+        <div id="sc-recomendacao" style="font-size:12px;color:var(--text2)"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 
 <!-- MODAL OVERLAY -->
 <div class="modal-ov" id="modalOv" onclick="closeModalOv(event)">
@@ -960,7 +1126,16 @@ body.compact .instab-banner{padding:10px 14px;margin-bottom:12px}
           <div class="pref-label">APIs</div>
           <div style="padding:12px 0;font-size:13px;color:var(--text2)">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><span style="color:#22c55e;font-size:16px">✓</span> Finnhub — configurado no servidor</div>
-            <div style="display:flex;align-items:center;gap:8px"><span style="color:#22c55e;font-size:16px">✓</span> OpenRouter — configurado no servidor</div>
+            <div id="or-key-status" style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:15px">⏳</span> OpenRouter — verificando…
+            </div>
+          </div>
+          <div id="or-key-error" style="display:none;margin-top:8px;padding:12px 14px;background:rgba(255,80,99,.08);border:1px solid rgba(255,80,99,.25);border-radius:10px;font-size:12px;color:var(--red);line-height:1.6">
+            <strong>⚠️ Chave OpenRouter inválida ou não configurada.</strong><br>
+            1. Acesse <a href="https://openrouter.ai/keys" target="_blank" style="color:var(--accent)">openrouter.ai/keys</a> e gere uma nova chave gratuita<br>
+            2. Abra o arquivo <code style="background:var(--bg3);padding:1px 5px;border-radius:4px">.env</code> na pasta do projeto<br>
+            3. Cole em: <code style="background:var(--bg3);padding:1px 5px;border-radius:4px">OPENROUTER_API_KEY=sk-or-v1-SUA_CHAVE_AQUI</code><br>
+            4. Reinicie o servidor (<code style="background:var(--bg3);padding:1px 5px;border-radius:4px">iniciar.bat</code>)
           </div>
         </div>
         <div class="pref-section">
@@ -1124,57 +1299,6 @@ body.compact .instab-banner{padding:10px 14px;margin-bottom:12px}
   </div>
 </div>
 
-<!-- ══ ASSET DETAIL MODAL ══ -->
-<div class="am-ov" id="assetModalOv" onclick="if(event.target===this)closeAssetModal()">
-  <div class="am-box" id="assetModalBox">
-    <div class="am-hd">
-      <div class="am-id">
-        <div class="am-dot" id="amDot"></div>
-        <div>
-          <div class="am-pair" id="amPair"></div>
-          <div class="am-name" id="amName"></div>
-        </div>
-      </div>
-      <div class="am-close" onclick="closeAssetModal()">✕</div>
-    </div>
-    <div class="am-body">
-      <div class="am-left">
-        <div class="am-sec-lbl">Cotação atual</div>
-        <div class="am-price" id="amPrice"></div>
-        <div class="am-var" id="amVar"></div>
-        <div class="am-chart"><canvas id="amChart"></canvas></div>
-        <div class="am-chart-lbl">Últimas 24h (estimado)</div>
-      </div>
-      <div class="am-right">
-        <div class="am-sec-lbl">Histórico</div>
-        <div class="am-stat">
-          <div class="am-stat-lbl">▲ Máxima histórica</div>
-          <div class="am-stat-val up" id="amHigh"></div>
-          <div class="am-stat-sub" id="amHighDate"></div>
-        </div>
-        <div class="am-stat">
-          <div class="am-stat-lbl">▼ Mínima histórica</div>
-          <div class="am-stat-val dn" id="amLow"></div>
-          <div class="am-stat-sub" id="amLowDate"></div>
-        </div>
-        <div class="am-stat">
-          <div class="am-stat-lbl">↕ Variação 30 dias</div>
-          <div class="am-stat-val" id="amVar30"></div>
-        </div>
-      </div>
-    </div>
-    <div class="am-footer">
-      <div class="am-ai-hd">
-        <div class="am-ai-badge">✦ Análise IA</div>
-        <span class="am-ai-prof" id="amAiProf"></span>
-      </div>
-      <div id="amAiArea">
-        <div class="am-ai-loading"><div class="am-dots"><span></span><span></span><span></span></div> Gerando análise personalizada…</div>
-      </div>
-    </div>
-  </div>
-</div>
-
 
 <!-- ══ ASSET DETAIL MODAL ══ -->
 <div class="am-ov" id="assetModalOv" onclick="if(event.target===this)closeAssetModal()">
@@ -1215,6 +1339,23 @@ body.compact .instab-banner{padding:10px 14px;margin-bottom:12px}
         </div>
       </div>
     </div>
+    <!-- Score de Momento (v1.4) -->
+    <div id="amScoreSection" style="padding:12px 20px 0;border-top:1px solid var(--border);display:none">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <div style="font-size:11px;font-weight:600;color:var(--text1)">Score de Momento</div>
+        <div id="amScoreLabel" style="font-size:10px;font-weight:600;padding:2px 9px;border-radius:100px;border:1px solid"></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+        <div id="amScoreNum" style="font-family:var(--font-d);font-size:36px;font-weight:800;line-height:1;min-width:52px"></div>
+        <div style="flex:1">
+          <div style="height:8px;background:var(--bg3);border-radius:4px;overflow:hidden;margin-bottom:6px">
+            <div id="amScoreBar" style="height:100%;border-radius:4px;transition:width .6s ease;width:0%"></div>
+          </div>
+          <div id="amScoreResumo" style="font-size:11px;color:var(--text2);line-height:1.5"></div>
+        </div>
+      </div>
+      <div id="amScoreFatores" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+    </div>
     <div class="am-footer">
       <div class="am-ai-hd">
         <div class="am-ai-badge">✦ Análise IA</div>
@@ -1226,6 +1367,7 @@ body.compact .instab-banner{padding:10px 14px;margin-bottom:12px}
     </div>
   </div>
 </div>
+
 
 
 <script>
@@ -2250,8 +2392,9 @@ async function aiSend() {
   try {
     // Envia via backend — chave fica no servidor
     const result = await Chat.send(msg, aiSessionId, buildMktContext(), aiHistory.slice(0, -1));
-    aiSessionId = result.session_id; // persiste o ID da sessão
-    const reply = result.reply;
+    aiSessionId = result.session_id;
+    const reply = result.reply || '';
+    if (!reply) throw new Error('A IA não retornou resposta. Tente novamente.');
     aiHistory.push({ role: 'assistant', content: reply });
     typingDiv.remove();
 
@@ -2456,6 +2599,27 @@ function setCfgTab(tab, el) {
   document.getElementById('cfgTab-' + tab).style.display = 'block';
   el.closest('.modal-tabs').querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
+  if (tab === 'dados') checkOrKey();
+}
+
+async function checkOrKey() {
+  const statusEl = document.getElementById('or-key-status');
+  const errorEl  = document.getElementById('or-key-error');
+  if (!statusEl) return;
+  statusEl.innerHTML = '<span style="font-size:15px">⏳</span> OpenRouter — verificando…';
+  try {
+    const res = await apiFetch('/health/keys');
+    const or  = res.openrouter;
+    if (or.valid) {
+      statusEl.innerHTML = '<span style="color:#22c55e;font-size:16px">✓</span> OpenRouter — chave válida ✅';
+      if (errorEl) errorEl.style.display = 'none';
+    } else {
+      statusEl.innerHTML = '<span style="color:var(--red);font-size:16px">✗</span> OpenRouter — <strong style="color:var(--red)">chave inválida</strong>';
+      if (errorEl) errorEl.style.display = '';
+    }
+  } catch(e) {
+    statusEl.innerHTML = '<span style="color:var(--amber);font-size:16px">?</span> OpenRouter — não foi possível verificar';
+  }
 }
 
 // ══════════════════════════════════════════════════
@@ -3246,20 +3410,334 @@ function renderJornadaCharts() {
   }
 }
 
-// ── goPage hook unificado ─────────────────────────────────
-const _origGoPage = goPage;
-goPage = function(page) {
-  _origGoPage(page);
-  if (page === 'jornada') {
-    loadPortfolio();
-    loadLevel();
-    loadJarvisHistory();
-    clearTimeout(jornadaJarvisTimer);
-    jornadaJarvisTimer = setTimeout(runJarvisInsight, 1200);
-    setTimeout(renderJornadaCharts, 500);
+// ══════════════════════════════════════════════════
+//  v1.4 — SCORE DE MOMENTO (no modal de ativo)
+// ══════════════════════════════════════════════════
+
+async function loadAssetScore(id, meta, data) {
+  const scoreSection = document.getElementById('amScoreSection');
+  if (!scoreSection) return;
+  scoreSection.style.display = '';
+
+  const var30raw = parseFloat(document.getElementById('amVar30')?.textContent) || data.chgPct * 4;
+  try {
+    const res = await Score.moment({
+      asset_id:   id,
+      asset_name: meta.name,
+      pair:       meta.pair,
+      price:      data.price,
+      chg_pct:    data.chgPct,
+      high_hist:  meta.high,
+      low_hist:   meta.low,
+      var_30d:    var30raw,
+    });
+
+    const score = Math.max(0, Math.min(100, res.score || 50));
+    const colorMap = { green: 'var(--green)', amber: 'var(--amber)', red: 'var(--red)' };
+    const labelBg  = { green: 'rgba(34,201,138,.12)', amber: 'rgba(245,166,35,.12)', red: 'rgba(255,80,99,.12)' };
+    const col      = colorMap[res.color] || 'var(--accent)';
+    const bg       = labelBg[res.color]  || 'rgba(79,141,255,.12)';
+
+    document.getElementById('amScoreNum').textContent  = score;
+    document.getElementById('amScoreNum').style.color  = col;
+    document.getElementById('amScoreBar').style.width  = score + '%';
+    document.getElementById('amScoreBar').style.background = col;
+    document.getElementById('amScoreResumo').textContent   = res.resumo || '';
+
+    const lblEl = document.getElementById('amScoreLabel');
+    lblEl.textContent   = res.label || '';
+    lblEl.style.color   = col;
+    lblEl.style.background   = bg;
+    lblEl.style.borderColor  = col;
+
+    // Fatores
+    const fatEl = document.getElementById('amScoreFatores');
+    if (res.fatores && fatEl) {
+      fatEl.innerHTML = res.fatores.map(f => `
+        <div class="score-fator" style="flex-direction:column;align-items:flex-start">
+          <div style="font-size:10px;font-weight:500;color:var(--text1)">${f.nome}</div>
+          <div class="score-fator-bar" style="width:${f.valor}%;background:${col}"></div>
+          <div style="font-size:10px;color:var(--text3)">${f.desc}</div>
+        </div>`).join('');
+      fatEl.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;padding-bottom:4px';
+    }
+  } catch(e) {
+    if (scoreSection) scoreSection.style.display = 'none';
+    console.warn('Score error:', e.message);
+  }
+}
+
+// Hook openAssetModal to also load score
+const _origOpenAssetModal = openAssetModal;
+openAssetModal = function(id) {
+  _origOpenAssetModal(id);
+  const meta = ASSET_META[id];
+  const data = mkt[id];
+  if (meta && data) {
+    setTimeout(() => loadAssetScore(id, meta, data), 900);
   }
 };
 
+// ══════════════════════════════════════════════════
+//  v1.4 — SIMULADOR DE CENÁRIOS
+// ══════════════════════════════════════════════════
+
+function openScenario() {
+  document.getElementById('scenarioOv').classList.add('open');
+  document.getElementById('scenario-result').style.display  = 'none';
+  document.getElementById('scenario-loading').style.display = 'none';
+}
+function closeScenario() {
+  document.getElementById('scenarioOv').classList.remove('open');
+}
+function setScenario(btn) {
+  document.getElementById('scenario-input').value = btn.textContent.replace(/^[^\w]+/,'').trim();
+}
+
+async function runScenario() {
+  const desc = document.getElementById('scenario-input').value.trim();
+  if (!desc) { showToast('Descreva um cenário primeiro.'); return; }
+
+  const loadEl   = document.getElementById('scenario-loading');
+  const resultEl = document.getElementById('scenario-result');
+  loadEl.style.display   = '';
+  resultEl.style.display = 'none';
+
+  const assets   = jornadaPortfolio.assets || [];
+  const snap     = JSON.stringify(assets.map(a => ({
+    id: a.id, name: a.name, amount: a.amount,
+    buy_price: a.buy_price,
+    current_price: getAssetCurrentPrice(a.id)
+  })));
+  const affected = assets.map(a => a.id);
+
+  try {
+    const res = await Scenario.simulate(desc, affected, snap);
+    loadEl.style.display = 'none';
+
+    const impacto = res.impacto_total || 'neutro';
+    const varPct  = res.variacao_estimada_pct || 0;
+    const colMap  = { positivo:'var(--green)', negativo:'var(--red)', neutro:'var(--text3)' };
+    const bgMap   = { positivo:'rgba(34,201,138,.12)', negativo:'rgba(255,80,99,.12)', neutro:'rgba(100,120,160,.12)' };
+    const col     = colMap[impacto] || 'var(--text3)';
+
+    document.getElementById('sc-impacto-badge').textContent = impacto.toUpperCase();
+    document.getElementById('sc-impacto-badge').style.cssText = `font-size:11px;font-weight:600;padding:3px 10px;border-radius:100px;border:1px solid ${col};background:${bgMap[impacto]};color:${col}`;
+    document.getElementById('sc-variacao').textContent   = (varPct >= 0 ? '+' : '') + varPct.toFixed(1) + '%';
+    document.getElementById('sc-variacao').style.color   = col;
+    document.getElementById('sc-narrativa').textContent  = res.narrativa || '';
+    document.getElementById('sc-recomendacao').textContent = res.recomendacao || '';
+
+    const ativosEl = document.getElementById('sc-ativos');
+    if (res.ativos && ativosEl) {
+      ativosEl.innerHTML = res.ativos.map(a => {
+        const ac = a.impacto_pct >= 0 ? 'var(--green)' : 'var(--red)';
+        return `<div style="display:flex;align-items:center;gap:10px;padding:7px 10px;background:var(--bg2);border-radius:8px;border:1px solid var(--border)">
+          <span style="font-size:12px;font-weight:500;color:var(--text1);flex:1">${a.nome}</span>
+          <span style="font-size:12px;font-weight:600;color:${ac}">${a.impacto_pct >= 0 ? '+' : ''}${a.impacto_pct.toFixed(1)}%</span>
+          <span style="font-size:11px;color:var(--text3)">${a.explicacao || ''}</span>
+        </div>`;
+      }).join('');
+    }
+
+    resultEl.style.display = '';
+  } catch(e) {
+    loadEl.style.display = 'none';
+    showToast('Erro na simulação: ' + e.message);
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  v1.4 — RELATÓRIO MENSAL
+// ══════════════════════════════════════════════════
+
+let _currentReport = null;
+
+function openRelatorio() {
+  const ov  = document.getElementById('relOv');
+  const drw = document.getElementById('relDrawer');
+  if (!ov || !drw) return;
+  ov.style.opacity = '1';
+  ov.style.pointerEvents = 'auto';
+  drw.style.transform = 'none';
+  loadRelatorioHistorico();
+}
+
+function closeRelatorio() {
+  const ov  = document.getElementById('relOv');
+  const drw = document.getElementById('relDrawer');
+  if (ov)  { ov.style.opacity = '0'; ov.style.pointerEvents = 'none'; }
+  if (drw) { drw.style.transform = 'translateX(100%)'; }
+}
+
+async function gerarRelatorio() {
+  const loadEl    = document.getElementById('relatorio-loading');
+  const contentEl = document.getElementById('relatorio-content');
+  const btnEl     = document.getElementById('btnGerarRelatorio');
+
+  loadEl.style.display    = '';
+  contentEl.style.display = 'none';
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Gerando…'; }
+
+  const assets = jornadaPortfolio.assets || [];
+  const snap   = JSON.stringify(assets.map(a => ({
+    name: a.name, amount: a.amount,
+    buy_price: a.buy_price,
+    current_price: getAssetCurrentPrice(a.id),
+    pnl_pct: getAssetCurrentPrice(a.id)
+      ? ((getAssetCurrentPrice(a.id) - a.buy_price) / a.buy_price * 100).toFixed(1)
+      : null
+  })));
+  const mktCtx = buildMktContext ? buildMktContext() : '';
+  const period = new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+
+  try {
+    const res = await Report.generate(snap, mktCtx, period);
+    _currentReport = res;
+
+    document.getElementById('rel-titulo').textContent       = res.titulo      || 'Relatório EconRadar';
+    document.getElementById('rel-investidor').textContent   = 'Para: ' + (res.investidor || '');
+    document.getElementById('rel-resumo').textContent       = res.resumo_executivo || '';
+    document.getElementById('rel-analise').textContent      = res.analise_portfolio || '';
+    document.getElementById('rel-oportunidades').textContent= res.oportunidades     || '';
+    document.getElementById('rel-riscos').textContent       = res.riscos            || '';
+    document.getElementById('rel-recomendacao').textContent = res.recomendacao_mes  || '';
+    document.getElementById('rel-nota-perfil').textContent  = res.nota_perfil       || '';
+
+    // Destaques
+    const destEl = document.getElementById('rel-destaques');
+    if (res.destaques && destEl) {
+      destEl.innerHTML = res.destaques.map(d => {
+        const isPos = d.tipo === 'positivo';
+        return `<div class="wcard" style="padding:12px 14px;border-color:${isPos?'rgba(34,201,138,.2)':'rgba(245,166,35,.2)'}">
+          <div style="font-size:11px;font-weight:600;color:${isPos?'var(--green)':'var(--amber)'};margin-bottom:4px">${isPos?'✓ Positivo':'⚠ Atenção'}</div>
+          <div style="font-size:12px;color:var(--text2);line-height:1.5">${d.texto}</div>
+        </div>`;
+      }).join('');
+    }
+
+    loadEl.style.display    = 'none';
+    contentEl.style.display = '';
+    loadRelatorioHistorico();
+  } catch(e) {
+    loadEl.style.display = 'none';
+    const msg = e.message || '';
+    if (msg.includes('401') || msg.toLowerCase().includes('inválida') || msg.toLowerCase().includes('expirada')) {
+      // Mostra erro inline no drawer
+      const body = document.getElementById('relDrawerBody');
+      if (body) {
+        const errDiv = document.createElement('div');
+        errDiv.style.cssText = 'margin-bottom:16px;padding:16px;background:rgba(255,80,99,.08);border:1px solid rgba(255,80,99,.25);border-radius:12px;font-size:13px;color:var(--text2);line-height:1.7';
+        errDiv.innerHTML = `<div style="font-weight:700;color:var(--red);margin-bottom:8px">🔑 Chave OpenRouter inválida ou expirada</div>
+          <ol style="margin:0;padding-left:18px;color:var(--text2)">
+            <li>Acesse <a href="https://openrouter.ai/keys" target="_blank" style="color:var(--accent)">openrouter.ai/keys</a> e gere uma nova chave gratuita</li>
+            <li>Abra o arquivo <code style="background:var(--bg3);padding:1px 5px;border-radius:4px">.env</code> na pasta do projeto</li>
+            <li>Substitua: <code style="background:var(--bg3);padding:2px 6px;border-radius:4px;display:inline-block;margin-top:4px">OPENROUTER_API_KEY=sk-or-v1-SUA_CHAVE_AQUI</code></li>
+            <li>Reinicie o servidor (<code style="background:var(--bg3);padding:1px 5px;border-radius:4px">iniciar.bat</code>)</li>
+          </ol>`;
+        body.prepend(errDiv);
+      }
+    } else {
+      showToast('Erro ao gerar relatório: ' + msg);
+    }
+  } finally {
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Gerar relatório'; }
+  }
+}
+
+function downloadRelatorio() {
+  if (!_currentReport) { showToast('Gere um relatório primeiro.'); return; }
+  const r = _currentReport;
+  const html = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="UTF-8"><title>${r.titulo}</title>
+<style>
+  body{font-family:Arial,sans-serif;max-width:700px;margin:40px auto;color:#111;font-size:13px;line-height:1.7}
+  h1{font-size:20px;margin-bottom:4px}
+  h2{font-size:14px;margin:20px 0 6px;border-bottom:1px solid #ddd;padding-bottom:4px}
+  .tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;margin-right:6px}
+  .pos{background:#d4f4e2;color:#065f46}.neg{background:#fee2e2;color:#991b1b}.warn{background:#fef3c7;color:#92400e}
+  p{margin:6px 0}
+</style>
+</head><body>
+<h1>${r.titulo}</h1>
+<p style="color:#666">Para: ${r.investidor} · Gerado em ${new Date().toLocaleDateString('pt-BR')}</p>
+<h2>Resumo executivo</h2><p>${r.resumo_executivo}</p>
+${(r.destaques||[]).map(d=>`<span class="tag ${d.tipo==='positivo'?'pos':'warn'}">${d.tipo==='positivo'?'✓':'⚠'} ${d.texto}</span>`).join('')}
+<h2>Análise do portfólio</h2><p>${r.analise_portfolio}</p>
+<h2>Oportunidades</h2><p>${r.oportunidades}</p>
+<h2>Riscos</h2><p>${r.riscos}</p>
+<h2>Recomendação do mês</h2><p><strong>${r.recomendacao_mes}</strong></p>
+<h2>Nota do assessor</h2><p><em>${r.nota_perfil}</em></p>
+</body></html>`;
+  const blob = new Blob([html], { type: 'text/html' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `EconRadar-${r.periodo || 'relatorio'}.html`;
+  a.click(); URL.revokeObjectURL(url);
+  showToast('Relatório baixado! Abra no navegador e use Ctrl+P para salvar como PDF.');
+}
+
+async function loadRelatorioHistorico() {
+  const el = document.getElementById('relatorio-historico');
+  if (!el) return;
+  try {
+    const reports = await Report.history();
+    if (!reports || reports.length === 0) {
+      el.innerHTML = '<div style="font-size:12px;color:var(--text3)">Nenhum relatório gerado ainda.</div>';
+      return;
+    }
+    el.innerHTML = reports.map(r => {
+      const rep  = r.full_report || {};
+      const date = r.generated_at ? new Date(r.generated_at).toLocaleDateString('pt-BR') : '';
+      const period = r.period || rep.periodo || '';
+      return `<div class="wcard" style="padding:14px 16px;display:flex;align-items:center;gap:12px;cursor:pointer" onclick="abrirRelatorioHistorico(${JSON.stringify(JSON.stringify(rep))})">
+        <div style="width:34px;height:34px;border-radius:9px;background:rgba(79,141,255,.1);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">📊</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:600;color:var(--text1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${rep.titulo || 'Relatório EconRadar'}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">${period}${date ? ' · ' + date : ''}</div>
+        </div>
+        <div style="font-size:11px;color:var(--accent);font-weight:600;flex-shrink:0">Ver →</div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--text3)">Erro ao carregar histórico.</div>';
+  }
+}
+
+function abrirRelatorioHistorico(jsonStr) {
+  try {
+    const res = JSON.parse(jsonStr);
+    if (!res || !res.titulo) return;
+    _currentReport = res;
+    const loadEl    = document.getElementById('relatorio-loading');
+    const contentEl = document.getElementById('relatorio-content');
+    if (loadEl) loadEl.style.display = 'none';
+
+    document.getElementById('rel-titulo').textContent       = res.titulo      || 'Relatório EconRadar';
+    document.getElementById('rel-investidor').textContent   = 'Para: ' + (res.investidor || '');
+    document.getElementById('rel-resumo').textContent       = res.resumo_executivo || '';
+    document.getElementById('rel-analise').textContent      = res.analise_portfolio || '';
+    document.getElementById('rel-oportunidades').textContent= res.oportunidades     || '';
+    document.getElementById('rel-riscos').textContent       = res.riscos            || '';
+    document.getElementById('rel-recomendacao').textContent = res.recomendacao_mes  || '';
+    document.getElementById('rel-nota-perfil').textContent  = res.nota_perfil       || '';
+
+    const destEl = document.getElementById('rel-destaques');
+    if (res.destaques && destEl) {
+      destEl.innerHTML = res.destaques.map(d => {
+        const isPos = d.tipo === 'positivo';
+        return `<div class="wcard" style="padding:12px 14px;border-color:${isPos?'rgba(34,201,138,.2)':'rgba(245,166,35,.2)'}">
+          <div style="font-size:11px;font-weight:600;color:${isPos?'var(--green)':'var(--amber)'};margin-bottom:4px">${isPos?'✓ Positivo':'⚠ Atenção'}</div>
+          <div style="font-size:12px;color:var(--text2);line-height:1.5">${d.texto}</div>
+        </div>`;
+      }).join('');
+    }
+    if (contentEl) contentEl.style.display = '';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } catch(e) { showToast('Erro ao abrir relatório.'); }
+}
 </script>
+</div><!-- /wrapper -->
 </body>
 </html>
