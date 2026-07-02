@@ -1,9 +1,10 @@
 """
-EconRadar Backend — Versão 1.0 (Fundação Sólida)
-- Rate limiting via slowapi
-- Cache inteligente em memória
+EconRadar Backend — Versão 2.0 (Multi-usuário / PostgreSQL)
+- Cadastro gratuito e aberto, com controle de planos pagos (subscriptions)
+- Persistência em PostgreSQL (sem ORM, SQL parametrizado) em vez de data.json
+- Senhas com bcrypt, API keys e posições B3 cifradas em repouso (Fernet/AES)
+- JWT por usuário (access curto + refresh revogável), rate limiting, lockout
 - Indicadores técnicos (RSI, MACD, Bollinger)
-- Nível de experiência no perfil
 - Importação de carteira B3 via CSV
 """
 
@@ -23,29 +24,23 @@ else:
 
 from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
-from jose import JWTError, jwt
-from datetime import datetime, timedelta, timezone
-import httpx, json, os, re, xml.etree.ElementTree as _ET, bcrypt as _bcrypt
-from pathlib import Path
+from pydantic import BaseModel, EmailStr
+from datetime import datetime
+import httpx, json, os, re, xml.etree.ElementTree as _ET
 from typing import Any, Optional
 import time, math, io, csv
 
-# slowapi
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-def _check_password(plain: str, hashed: str) -> bool:
-    return _bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+import auth
+import data_repo
+from data_repo import LEVEL_THRESHOLDS, LEVEL_LABELS, XP_EVENTS  # noqa: F401 (reexport p/ paridade)
 
 # ── Configuração ───────────────────────────────────────────────────────────────
-SECRET_KEY    = os.getenv("SECRET_KEY", "")
-ALGORITHM     = "HS256"
-TOKEN_HOURS   = int(os.getenv("TOKEN_EXPIRE_H", "24"))
 OR_KEY        = os.getenv("OPENROUTER_API_KEY", "")
 FH_KEY        = os.getenv("FINNHUB_API_KEY", "")
 OR_MODEL      = os.getenv("OR_MODEL", "google/gemma-4-31b-it:free")
@@ -57,12 +52,11 @@ _default_origins = [
     "http://localhost:3000", "http://127.0.0.1:3000",
 ]
 ALLOWED = _default_origins + ([o.strip() for o in ALLOWED_ENV.split(",") if o.strip()] if ALLOWED_ENV else [])
-DATA_FILE     = Path(__file__).parent / "data" / "data.json"
 
 # ── Rate Limiter ───────────────────────────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address)
 
-# ── Cache Inteligente em Memória ───────────────────────────────────────────────
+# ── Cache Inteligente em Memória (não guarda nada sensível) ──────────────────
 class SimpleCache:
     def __init__(self):
         self._store: dict[str, dict] = {}
@@ -77,10 +71,7 @@ class SimpleCache:
         return entry["value"]
 
     def set(self, key: str, value: Any, ttl_seconds: int = 60):
-        self._store[key] = {
-            "value": value,
-            "expires_at": time.time() + ttl_seconds,
-        }
+        self._store[key] = {"value": value, "expires_at": time.time() + ttl_seconds}
 
     def invalidate(self, key: str):
         self._store.pop(key, None)
@@ -89,21 +80,11 @@ class SimpleCache:
         self._store.clear()
 
     def size(self) -> int:
-        # clean expired first
         now = time.time()
         self._store = {k: v for k, v in self._store.items() if v["expires_at"] > now}
         return len(self._store)
 
 cache = SimpleCache()
-
-# ── JSON Storage ───────────────────────────────────────────────────────────────
-def load_data() -> dict:
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def save_data(data: dict):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False, default=str)
 
 # ── OpenRouter helper com fallback ────────────────────────────────────────────
 def _extract_or_content(resp_json: dict) -> str:
@@ -116,7 +97,7 @@ def _extract_or_content(resp_json: dict) -> str:
         if isinstance(content, str):
             return content.strip()
         if isinstance(content, list):
-            parts = [b.get("text","") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+            parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
             return " ".join(parts).strip()
     except Exception:
         pass
@@ -158,21 +139,14 @@ async def _or_call(or_key: str, messages: list, max_tokens: int = 1000,
 
     raise HTTPException(502, last_error)
 
-# ── JWT ────────────────────────────────────────────────────────────────────────
-bearer = HTTPBearer()
+def _user_or_key(user: dict) -> str:
+    return OR_KEY or (data_repo.get_api_key(user["id"], "openrouter") or "")
 
-def create_token() -> str:
-    exp = datetime.now(timezone.utc) + timedelta(hours=TOKEN_HOURS)
-    return jwt.encode({"sub": "admin", "exp": exp}, SECRET_KEY, algorithm=ALGORITHM)
-
-def verify_token(creds: HTTPAuthorizationCredentials = Depends(bearer)):
-    try:
-        jwt.decode(creds.credentials, SECRET_KEY, algorithms=[ALGORITHM])
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Token inválido ou expirado")
+def _user_fh_key(user: dict) -> str:
+    return FH_KEY or (data_repo.get_api_key(user["id"], "finnhub") or "")
 
 # ── App ────────────────────────────────────────────────────────────────────────
-app = FastAPI(title="EconRadar API", version="1.0.0")
+app = FastAPI(title="EconRadar API", version="2.0.0")
 app.state.limiter = limiter
 
 @app.exception_handler(RateLimitExceeded)
@@ -180,11 +154,7 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
     retry = getattr(exc, "retry_after", 60)
     return JSONResponse(
         status_code=429,
-        content={
-            "error": "rate_limit",
-            "message": "Muitas requisições. Tente novamente em breve.",
-            "retry_after": retry
-        }
+        content={"error": "rate_limit", "message": "Muitas requisições. Tente novamente em breve.", "retry_after": retry},
     )
 
 app.add_middleware(
@@ -196,7 +166,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Arquivos estáticos ─────────────────────────────────────────────────────────
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
@@ -212,33 +181,144 @@ def serve_app():
 def serve_apijs():
     return FileResponse(str(FRONTEND_DIR / "api.js"))
 
-# ── Auth ───────────────────────────────────────────────────────────────────────
-class LoginIn(BaseModel):
+# ══════════════════════════════════════════════════════════════════════════════
+#  AUTENTICAÇÃO — cadastro gratuito + login + refresh + planos
+# ══════════════════════════════════════════════════════════════════════════════
+
+class RegisterIn(BaseModel):
+    email: EmailStr
     username: str
+    password: str
+    display_name: Optional[str] = None
+
+@app.post("/api/auth/register")
+@limiter.limit("5/minute")
+async def register(request: Request, body: RegisterIn):
+    auth.validate_registration(body.email, body.username, body.password)
+    taken = data_repo.email_or_username_taken(body.email, body.username)
+    if taken == "email":
+        raise HTTPException(409, "Já existe uma conta com este e-mail.")
+    if taken == "username":
+        raise HTTPException(409, "Este nome de usuário já está em uso.")
+
+    pw_hash = auth.hash_password(body.password)
+    user_id = data_repo.create_user(body.email, body.username, pw_hash, body.display_name or body.username)
+    auth.audit("register", user_id, request)
+
+    access = auth.create_access_token(user_id)
+    refresh = auth.issue_refresh_token(user_id, request)
+    return {
+        "access_token": access,
+        "refresh_token": refresh,
+        "token_type": "bearer",
+        "display_name": body.display_name or body.username,
+        "plan": "free",
+    }
+
+
+class LoginIn(BaseModel):
+    username: str   # aceita username OU e-mail
     password: str
 
 @app.post("/api/auth/login")
 @limiter.limit("10/minute")
 async def login(request: Request, body: LoginIn):
-    data = load_data()
-    user = data["user"]
-    if body.username.strip().lower() != user["username"].lower():
-        raise HTTPException(status_code=401, detail="Usuário ou senha incorretos")
-    if not _check_password(body.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Usuário ou senha incorretos")
-    result = _grant_xp(data, "login")
-    save_data(data)
+    user = data_repo.find_user_by_login(body.username)
+    if not user or not user["is_active"]:
+        raise HTTPException(401, "Usuário ou senha incorretos")
+
+    if user["locked_until"] and user["locked_until"] > datetime.now():
+        raise HTTPException(429, "Conta temporariamente bloqueada por excesso de tentativas. Tente novamente mais tarde.")
+
+    if not auth.check_password(body.password, user["password_hash"]):
+        data_repo.register_failed_login(user["id"])
+        auth.audit("login_failed", user["id"], request)
+        raise HTTPException(401, "Usuário ou senha incorretos")
+
+    data_repo.reset_failed_login(user["id"])
+    profile = data_repo.get_profile(user["id"])
+    xp_result = data_repo.grant_xp(user["id"], "login")
+    auth.audit("login_success", user["id"], request)
+
+    access = auth.create_access_token(user["id"])
+    refresh = auth.issue_refresh_token(user["id"], request)
     return {
-        "access_token": create_token(),
+        "access_token": access,
+        "refresh_token": refresh,
         "token_type": "bearer",
-        "display_name": data["profile"]["display_name"],
-        "level": result,
+        "display_name": profile.get("display_name"),
+        "level": xp_result,
     }
 
-@app.get("/api/auth/me", dependencies=[Depends(verify_token)])
-def me():
-    data = load_data()
-    return {"username": data["user"]["username"], "display_name": data["profile"]["display_name"]}
+
+class RefreshIn(BaseModel):
+    refresh_token: str
+
+@app.post("/api/auth/refresh")
+@limiter.limit("20/minute")
+async def refresh_token(request: Request, body: RefreshIn):
+    new_refresh, user_id = auth.rotate_refresh_token(body.refresh_token, request)
+    return {"access_token": auth.create_access_token(user_id), "refresh_token": new_refresh, "token_type": "bearer"}
+
+
+@app.post("/api/auth/logout")
+async def logout(body: RefreshIn):
+    auth.revoke_refresh_token(body.refresh_token)
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def me(user: dict = Depends(auth.get_current_user)):
+    profile = data_repo.get_profile(user["id"])
+    return {
+        "username": user["username"],
+        "email": user["email"],
+        "display_name": profile.get("display_name"),
+        "plan": user["plan"],
+        "plan_status": user["plan_status"],
+    }
+
+# ── Plano / Assinatura ──────────────────────────────────────────────────────────
+@app.get("/api/subscription/me", dependencies=[])
+def my_subscription(user: dict = Depends(auth.get_current_user)):
+    row = data_repo.db.fetchone(
+        "SELECT plan, status, provider, current_period_start, current_period_end, cancel_at_period_end "
+        "FROM subscriptions WHERE user_id=%s", (user["id"],)
+    )
+    return row or {"plan": "free", "status": "active"}
+
+
+class AdminSetPlanIn(BaseModel):
+    user_id: int
+    plan: str          # 'free' | 'pro' | 'premium'
+    status: str = "active"
+    period_end: Optional[str] = None
+
+def require_admin(user: dict = Depends(auth.get_current_user)) -> dict:
+    if user["role"] != "admin":
+        raise HTTPException(403, "Apenas administradores podem fazer isso.")
+    return user
+
+@app.post("/api/subscription/admin/set-plan", dependencies=[Depends(require_admin)])
+def admin_set_plan(body: AdminSetPlanIn):
+    """
+    Ponto único para refletir mudanças de plano vindas do gateway de pagamento
+    escolhido no futuro (Stripe/Mercado Pago/etc). Hoje é manual; quando o
+    gateway for definido, troque por um webhook que chama esta mesma lógica.
+    """
+    if body.plan not in ("free", "pro", "premium"):
+        raise HTTPException(400, "plano inválido")
+    data_repo.db.execute(
+        "INSERT INTO subscriptions (user_id, plan, status, current_period_end) VALUES (%s,%s,%s,%s) "
+        "ON CONFLICT (user_id) DO UPDATE SET plan=EXCLUDED.plan, status=EXCLUDED.status, "
+        "current_period_end=EXCLUDED.current_period_end",
+        (body.user_id, body.plan, body.status, body.period_end),
+    )
+    data_repo.db.execute(
+        "INSERT INTO subscription_events (user_id, event_type, raw_payload) VALUES (%s,'manual_admin_change',%s)",
+        (body.user_id, json.dumps(body.model_dump())),
+    )
+    return {"ok": True}
 
 # ── Perfil ─────────────────────────────────────────────────────────────────────
 class ProfileIn(BaseModel):
@@ -246,22 +326,19 @@ class ProfileIn(BaseModel):
     investor_type:    Optional[str] = None
     note:             Optional[str] = None
     interests:        list[str] | None = None
-    experience_level: Optional[str] = None   # "beginner" | "intermediate" | "advanced"
+    experience_level: Optional[str] = None
 
-@app.get("/api/users/profile", dependencies=[Depends(verify_token)])
-def get_profile():
-    return load_data()["profile"]
+@app.get("/api/users/profile")
+def get_profile(user: dict = Depends(auth.get_current_user)):
+    return data_repo.get_profile(user["id"])
 
-@app.put("/api/users/profile", dependencies=[Depends(verify_token)])
-def update_profile(body: ProfileIn):
-    data = load_data()
+@app.put("/api/users/profile")
+def update_profile(body: ProfileIn, user: dict = Depends(auth.get_current_user)):
     allowed_exp = {"beginner", "intermediate", "advanced"}
     updates = body.model_dump(exclude_none=True)
     if "experience_level" in updates and updates["experience_level"] not in allowed_exp:
         raise HTTPException(400, "experience_level inválido. Use: beginner, intermediate, advanced")
-    for k, v in updates.items():
-        data["profile"][k] = v
-    save_data(data)
+    data_repo.update_profile(user["id"], updates)
     return {"ok": True}
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -279,60 +356,54 @@ class ConfigIn(BaseModel):
     news_interest:  bool  | None = None
     cache_enabled:  bool  | None = None
 
-@app.get("/api/users/config", dependencies=[Depends(verify_token)])
-def get_config():
-    return load_data()["config"]
+@app.get("/api/users/config")
+def get_config(user: dict = Depends(auth.get_current_user)):
+    return data_repo.get_config(user["id"])
 
-@app.put("/api/users/config", dependencies=[Depends(verify_token)])
-def update_config(body: ConfigIn):
-    data = load_data()
-    for k, v in body.model_dump(exclude_none=True).items():
-        data["config"][k] = v
-    save_data(data)
+@app.put("/api/users/config")
+def update_config(body: ConfigIn, user: dict = Depends(auth.get_current_user)):
+    data_repo.update_config(user["id"], body.model_dump(exclude_none=True))
     return {"ok": True}
 
-# ── API Keys ───────────────────────────────────────────────────────────────────
+# ── API Keys (cifradas) ────────────────────────────────────────────────────────
 class ApiKeyIn(BaseModel):
     provider: str
     key:      str
 
-@app.put("/api/users/apikeys", dependencies=[Depends(verify_token)])
-def upsert_apikey(body: ApiKeyIn):
-    data = load_data()
-    data["api_keys"][body.provider] = body.key
-    save_data(data)
+@app.put("/api/users/apikeys")
+def upsert_apikey(body: ApiKeyIn, user: dict = Depends(auth.get_current_user)):
+    if body.provider not in ("finnhub", "openrouter"):
+        raise HTTPException(400, "provider inválido")
+    data_repo.upsert_api_key(user["id"], body.provider, body.key)
     return {"ok": True}
 
-@app.get("/api/users/apikeys/{provider}/exists", dependencies=[Depends(verify_token)])
-def apikey_exists(provider: str):
-    return {"exists": bool(load_data()["api_keys"].get(provider))}
+@app.get("/api/users/apikeys/{provider}/exists")
+def apikey_exists(provider: str, user: dict = Depends(auth.get_current_user)):
+    return {"exists": data_repo.api_key_exists(user["id"], provider)}
 
 # ── Cache Management ───────────────────────────────────────────────────────────
-@app.delete("/api/cache", dependencies=[Depends(verify_token)])
-def clear_cache():
+@app.delete("/api/cache")
+def clear_cache(user: dict = Depends(auth.get_current_user)):
     cache.clear()
     return {"ok": True, "message": "Cache limpo com sucesso."}
 
-@app.get("/api/cache/stats", dependencies=[Depends(verify_token)])
-def cache_stats():
+@app.get("/api/cache/stats")
+def cache_stats(user: dict = Depends(auth.get_current_user)):
     return {"entries": cache.size()}
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  INDICADORES TÉCNICOS — Cálculo puro em Python
+#  INDICADORES TÉCNICOS
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _fh_candle(symbol: str, resolution: str = "D", count: int = 60) -> list[float]:
-    """Busca dados históricos do Finnhub e retorna lista de preços de fechamento."""
+async def _fh_candle(symbol: str, user: dict, resolution: str = "D", count: int = 60) -> list[float]:
     cache_key = f"candle:{symbol}:{resolution}:{count}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
     now = int(time.time())
-    from_ts = now - (count * 86400 * 2)  # margem para fins de semana
-
-    data = load_data()
-    fh_key_rt = FH_KEY or data.get("api_keys", {}).get("finnhub", "")
+    from_ts = now - (count * 86400 * 2)
+    fh_key_rt = _user_fh_key(user)
     params = {"symbol": symbol, "resolution": resolution, "from": from_ts, "to": now, "token": fh_key_rt}
     try:
         async with httpx.AsyncClient(timeout=20) as client:
@@ -343,8 +414,8 @@ async def _fh_candle(symbol: str, resolution: str = "D", count: int = 60) -> lis
         closes = result.get("c", [])
         if not closes:
             raise HTTPException(404, f"Sem dados históricos para {symbol}")
-        # Só aplica cache se habilitado
-        if data.get("config", {}).get("cache_enabled", True):
+        cfg = data_repo.get_config(user["id"])
+        if cfg.get("cache_enabled", True):
             cache.set(cache_key, closes, ttl_seconds=60)
         return closes
     except HTTPException:
@@ -358,14 +429,11 @@ def _calc_rsi(closes: list[float], period: int = 14) -> float:
     changes = [closes[i] - closes[i-1] for i in range(1, len(closes))]
     gains = [max(c, 0) for c in changes]
     losses = [abs(min(c, 0)) for c in changes]
-
     avg_gain = sum(gains[:period]) / period
     avg_loss = sum(losses[:period]) / period
-
     for i in range(period, len(gains)):
         avg_gain = (avg_gain * (period - 1) + gains[i]) / period
         avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss
@@ -385,14 +453,12 @@ def _calc_macd(closes: list[float]):
     ema26 = _calc_ema(closes, 26)
     if not ema12 or not ema26:
         raise HTTPException(422, "Dados insuficientes para MACD")
-    # Alinha os dois arrays pelo menor (ema26 é menor)
     diff = len(ema12) - len(ema26)
     ema12_aligned = ema12[diff:]
     macd_line = [e12 - e26 for e12, e26 in zip(ema12_aligned, ema26)]
     signal_line = _calc_ema(macd_line, 9)
     if not signal_line:
         raise HTTPException(422, "Dados insuficientes para linha de sinal MACD")
-    diff2 = len(macd_line) - len(signal_line)
     macd_val   = round(macd_line[-1], 4)
     signal_val = round(signal_line[-1], 4)
     hist_val   = round(macd_val - signal_val, 4)
@@ -413,67 +479,50 @@ class IndicatorIn(BaseModel):
     symbol: str
     period: Optional[int] = None
 
-@app.post("/api/indicators/rsi", dependencies=[Depends(verify_token)])
-async def indicator_rsi(body: IndicatorIn):
+@app.post("/api/indicators/rsi")
+async def indicator_rsi(body: IndicatorIn, user: dict = Depends(auth.get_current_user)):
     period = body.period or 14
-    closes = await _fh_candle(body.symbol, count=max(100, period * 3))
+    closes = await _fh_candle(body.symbol, user, count=max(100, period * 3))
     rsi = _calc_rsi(closes, period)
     signal = "overbought" if rsi >= 70 else ("oversold" if rsi <= 30 else "neutral")
     return {"symbol": body.symbol, "rsi": rsi, "signal": signal, "period": period}
 
-@app.post("/api/indicators/macd", dependencies=[Depends(verify_token)])
-async def indicator_macd(body: IndicatorIn):
-    closes = await _fh_candle(body.symbol, count=200)
+@app.post("/api/indicators/macd")
+async def indicator_macd(body: IndicatorIn, user: dict = Depends(auth.get_current_user)):
+    closes = await _fh_candle(body.symbol, user, count=200)
     macd, signal, histogram = _calc_macd(closes)
     trend = "bullish" if histogram > 0 else "bearish"
     return {"symbol": body.symbol, "macd": macd, "signal": signal, "histogram": histogram, "trend": trend}
 
-@app.post("/api/indicators/bollinger", dependencies=[Depends(verify_token)])
-async def indicator_bollinger(body: IndicatorIn):
+@app.post("/api/indicators/bollinger")
+async def indicator_bollinger(body: IndicatorIn, user: dict = Depends(auth.get_current_user)):
     period = body.period or 20
-    closes = await _fh_candle(body.symbol, count=max(100, period * 3))
+    closes = await _fh_candle(body.symbol, user, count=max(100, period * 3))
     upper, middle, lower = _calc_bollinger(closes, period)
     current = round(closes[-1], 4)
     band_range = upper - lower
     if band_range > 0:
         rel = (current - lower) / band_range
-        if rel >= 0.9:
-            position = "near_upper"
-        elif rel <= 0.1:
-            position = "near_lower"
-        elif rel >= 0.5:
-            position = "above_middle"
-        else:
-            position = "below_middle"
+        position = "near_upper" if rel >= 0.9 else ("near_lower" if rel <= 0.1 else ("above_middle" if rel >= 0.5 else "below_middle"))
     else:
         position = "above_middle"
-    return {
-        "symbol": body.symbol,
-        "upper": upper, "middle": middle, "lower": lower,
-        "current_price": current, "position": position,
-        "period": period
-    }
+    return {"symbol": body.symbol, "upper": upper, "middle": middle, "lower": lower,
+            "current_price": current, "position": position, "period": period}
 
-@app.post("/api/indicators/all", dependencies=[Depends(verify_token)])
-async def indicator_all(body: IndicatorIn):
-    closes = await _fh_candle(body.symbol, count=200)
-
-    # RSI
+@app.post("/api/indicators/all")
+async def indicator_all(body: IndicatorIn, user: dict = Depends(auth.get_current_user)):
+    closes = await _fh_candle(body.symbol, user, count=200)
     try:
         rsi_val = _calc_rsi(closes, 14)
         rsi_sig = "overbought" if rsi_val >= 70 else ("oversold" if rsi_val <= 30 else "neutral")
         rsi_result = {"rsi": rsi_val, "signal": rsi_sig, "period": 14}
     except Exception as e:
         rsi_result = {"error": str(e)}
-
-    # MACD
     try:
         macd, sig, hist = _calc_macd(closes)
         macd_result = {"macd": macd, "signal": sig, "histogram": hist, "trend": "bullish" if hist > 0 else "bearish"}
     except Exception as e:
         macd_result = {"error": str(e)}
-
-    # Bollinger
     try:
         upper, middle, lower = _calc_bollinger(closes, 20)
         current = round(closes[-1], 4)
@@ -486,7 +535,6 @@ async def indicator_all(body: IndicatorIn):
         boll_result = {"upper": upper, "middle": middle, "lower": lower, "current_price": current, "position": pos, "period": 20}
     except Exception as e:
         boll_result = {"error": str(e)}
-
     return {"symbol": body.symbol, "rsi": rsi_result, "macd": macd_result, "bollinger": boll_result}
 
 # ── Chat ───────────────────────────────────────────────────────────────────────
@@ -496,52 +544,37 @@ class SendIn(BaseModel):
     context:    Optional[str] = None
     history:    list[dict] | None = None
 
-@app.get("/api/chat/sessions", dependencies=[Depends(verify_token)])
-def list_sessions():
-    data = load_data()
-    sessions = data.get("chat_sessions", [])
-    return sorted(sessions, key=lambda s: s.get("updated_at",""), reverse=True)[:50]
+@app.get("/api/chat/sessions")
+def list_sessions(user: dict = Depends(auth.get_current_user)):
+    return data_repo.list_chat_sessions(user["id"])
 
-@app.post("/api/chat/sessions", dependencies=[Depends(verify_token)])
-def create_session():
-    data = load_data()
-    sid = (max((s["id"] for s in data["chat_sessions"]), default=0)) + 1
-    now = datetime.now().isoformat()
-    session = {"id": sid, "title": "Nova conversa", "messages": [], "created_at": now, "updated_at": now}
-    data["chat_sessions"].append(session)
-    save_data(data)
-    return {"id": sid, "title": "Nova conversa"}
+@app.post("/api/chat/sessions")
+def create_session(user: dict = Depends(auth.get_current_user)):
+    return data_repo.create_chat_session(user["id"])
 
-@app.delete("/api/chat/sessions/{session_id}", dependencies=[Depends(verify_token)])
-def delete_session(session_id: int):
-    data = load_data()
-    data["chat_sessions"] = [s for s in data["chat_sessions"] if s["id"] != session_id]
-    save_data(data)
+@app.delete("/api/chat/sessions/{session_id}")
+def delete_session(session_id: int, user: dict = Depends(auth.get_current_user)):
+    data_repo.delete_chat_session(user["id"], session_id)
     return {"ok": True}
 
-@app.get("/api/chat/sessions/{session_id}/messages", dependencies=[Depends(verify_token)])
-def get_messages(session_id: int):
-    data = load_data()
-    session = next((s for s in data["chat_sessions"] if s["id"] == session_id), None)
+@app.get("/api/chat/sessions/{session_id}/messages")
+def get_messages(session_id: int, user: dict = Depends(auth.get_current_user)):
+    session = data_repo.get_owned_session(user["id"], session_id)
     if not session:
         raise HTTPException(404, "Sessão não encontrada")
-    return session.get("messages", [])
+    return data_repo.get_chat_messages(session_id)
 
 @app.post("/api/chat/send")
 @limiter.limit("20/minute")
-async def send_message(request: Request, body: SendIn, _=Depends(verify_token)):
-    data = load_data()
-    profile = data["profile"]
+async def send_message(request: Request, body: SendIn, user: dict = Depends(auth.get_current_user)):
+    profile = data_repo.get_profile(user["id"])
 
     if body.session_id:
-        session = next((s for s in data["chat_sessions"] if s["id"] == body.session_id), None)
+        session = data_repo.get_owned_session(user["id"], body.session_id)
         if not session:
             raise HTTPException(404, "Sessão não encontrada")
     else:
-        sid = (max((s["id"] for s in data["chat_sessions"]), default=0)) + 1
-        now = datetime.now().isoformat()
-        session = {"id": sid, "title": "Nova conversa", "messages": [], "created_at": now, "updated_at": now}
-        data["chat_sessions"].append(session)
+        session = data_repo.create_chat_session(user["id"])
 
     name = profile.get("display_name") or "investidor"
     inv  = profile.get("investor_type", "moderado")
@@ -563,7 +596,7 @@ Responda em português, seja direto e analítico. Máximo 4 parágrafos."""
 
     messages = (body.history or []) + [{"role": "user", "content": body.message}]
 
-    or_key = OR_KEY or load_data().get("api_keys", {}).get("openrouter", "")
+    or_key = _user_or_key(user)
     if not or_key:
         raise HTTPException(503, "Chave OpenRouter não configurada.")
 
@@ -573,21 +606,40 @@ Responda em português, seja direto e analítico. Máximo 4 parágrafos."""
         max_tokens=1000, temperature=0.7, timeout=20
     )
 
-    now = datetime.now().isoformat()
-    session["messages"].append({"role": "user",      "content": body.message, "created_at": now})
-    session["messages"].append({"role": "assistant", "content": reply,        "created_at": now})
-    session["updated_at"] = now
-    if session["title"] == "Nova conversa":
-        session["title"] = body.message[:60] + ("…" if len(body.message) > 60 else "")
+    data_repo.append_messages(session["id"], [("user", body.message), ("assistant", reply)])
+    new_title = body.message[:60] + ("…" if len(body.message) > 60 else "") if session.get("title", "Nova conversa") == "Nova conversa" else None
+    data_repo.touch_session(session["id"], title=new_title)
 
     if not profile.get("ai_used"):
-        data["profile"]["ai_used"] = True
+        data_repo.update_profile(user["id"], {})  # no-op pra manter padrão; flag abaixo
+        data_repo.db.execute("UPDATE profiles SET ai_used=1 WHERE user_id=%s", (user["id"],))
 
-    _grant_xp(data, "chat_message")
-    save_data(data)
+    data_repo.grant_xp(user["id"], "chat_message")
     return {"session_id": session["id"], "reply": reply}
 
 # ── Resumo Noturno ─────────────────────────────────────────────────────────────
+def _safe_json(raw: str, context: str = "") -> dict:
+    raw = raw.replace("```json", "").replace("```", "").strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r'\{[\s\S]*\}', raw)
+    if match:
+        candidate = match.group(0)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            open_braces   = candidate.count('{') - candidate.count('}')
+            open_brackets = candidate.count('[') - candidate.count(']')
+            fixed = candidate + (']' * max(0, open_brackets)) + ('}' * max(0, open_braces))
+            try:
+                return json.loads(fixed)
+            except json.JSONDecodeError:
+                pass
+    raise HTTPException(502, f"IA retornou JSON inválido{(' em '+context) if context else ''}. Tente novamente.")
+
+
 class SummaryIn(BaseModel):
     context:      str
     instab_score: int
@@ -596,17 +648,15 @@ class SummaryIn(BaseModel):
 
 @app.post("/api/summary/generate")
 @limiter.limit("5/minute")
-async def generate_summary(request: Request, body: SummaryIn, _=Depends(verify_token)):
-    data = load_data()
-
-    # Cache do resumo (TTL 5 min)
-    cache_key = f"summary:{hash(body.context[:100])}"
-    if data.get("config", {}).get("cache_enabled", True):
+async def generate_summary(request: Request, body: SummaryIn, user: dict = Depends(auth.get_current_user)):
+    cfg = data_repo.get_config(user["id"])
+    cache_key = f"summary:{user['id']}:{hash(body.context[:100])}"
+    if cfg.get("cache_enabled", True):
         cached = cache.get(cache_key)
         if cached:
             return cached
 
-    or_key = OR_KEY or data.get("api_keys", {}).get("openrouter", "")
+    or_key = _user_or_key(user)
     if not or_key:
         raise HTTPException(503, "Chave OpenRouter não configurada.")
 
@@ -628,34 +678,19 @@ async def generate_summary(request: Request, body: SummaryIn, _=Depends(verify_t
         ],
         max_tokens=600, temperature=0.3, timeout=20
     )
-    raw = raw.replace("```json","").replace("```","").strip()
-    match = re.search(r'\{[\s\S]*\}', raw)
-    if not match:
-        raise HTTPException(502, f"IA retornou formato inválido: {raw[:150]}")
+    parsed = _safe_json(raw, "resumo noturno")
+    data_repo.add_night_summary(user["id"], parsed.get("resumo", ""), body.instab_score)
 
-    parsed = json.loads(match.group(0))
-
-    data["night_summaries"].append({
-        "summary_text": parsed.get("resumo",""),
-        "instab_score": body.instab_score,
-        "generated_at": datetime.now().isoformat()
-    })
-    data["night_summaries"] = data["night_summaries"][-30:]
-    save_data(data)
-
-    if data.get("config", {}).get("cache_enabled", True):
+    if cfg.get("cache_enabled", True):
         cache.set(cache_key, parsed, ttl_seconds=300)
-
     return parsed
 
-@app.get("/api/summary/history", dependencies=[Depends(verify_token)])
-def summary_history():
-    data = load_data()
-    return list(reversed(data.get("night_summaries", [])))
+@app.get("/api/summary/history")
+def summary_history(user: dict = Depends(auth.get_current_user)):
+    return data_repo.get_night_summaries(user["id"], type_="daily")
 
-# ── Market Proxy ───────────────────────────────────────────────────────────────
-async def _fh(path: str, params: dict, data: dict = None):
-    fh_key_rt = FH_KEY or load_data().get("api_keys", {}).get("finnhub", "")
+# ── Market Proxy (rotas públicas, sem dado de usuário) ───────────────────────
+async def _fh(path: str, params: dict, fh_key_rt: str):
     params["token"] = fh_key_rt
     try:
         async with httpx.AsyncClient(timeout=20) as client:
@@ -670,26 +705,25 @@ async def _fh(path: str, params: dict, data: dict = None):
 
 @app.get("/api/market/quote")
 @limiter.limit("60/minute")
-async def market_quote(request: Request, symbol: str, _=Depends(verify_token)):
-    # Cache 60s para quotes
-    data = load_data()
+async def market_quote(request: Request, symbol: str, user: dict = Depends(auth.get_current_user)):
+    cfg = data_repo.get_config(user["id"])
     cache_key = f"quote:{symbol}"
-    if data.get("config", {}).get("cache_enabled", True):
+    if cfg.get("cache_enabled", True):
         cached = cache.get(cache_key)
         if cached:
             return cached
-    result = await _fh("/quote", {"symbol": symbol}, data)
-    if data.get("config", {}).get("cache_enabled", True):
+    result = await _fh("/quote", {"symbol": symbol}, _user_fh_key(user))
+    if cfg.get("cache_enabled", True):
         cache.set(cache_key, result, ttl_seconds=60)
     return result
 
 @app.get("/api/market/forex")
 async def market_forex(base: str = "USD"):
-    return await _fh("/forex/rates", {"base": base}, load_data())
+    return await _fh("/forex/rates", {"base": base}, FH_KEY)
 
 @app.get("/api/market/news")
 async def market_news(category: str = "general"):
-    return await _fh("/news", {"category": category}, load_data())
+    return await _fh("/news", {"category": category}, FH_KEY)
 
 @app.get("/api/proxy/awesome")
 async def proxy_awesome(pairs: str):
@@ -713,67 +747,39 @@ async def proxy_coingecko(ids: str, vs_currencies: str = "usd,brl", include_24hr
 
 @app.get("/api/proxy/yahoo")
 async def proxy_yahoo(symbols: str):
-    syms = symbols.replace(' ','').split(',')[:10]
+    syms = symbols.replace(' ', '').split(',')[:10]
     yf_symbols = ','.join(syms)
-    url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={yf_symbols}&fields=regularMarketPrice,regularMarketChangePercent,regularMarketPreviousClose"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
-    }
     try:
-        async with httpx.AsyncClient(timeout=15, headers=headers) as client:
-            r = await client.get(url)
+        async with httpx.AsyncClient(timeout=15, headers={"User-Agent": "Mozilla/5.0"}) as client:
+            r = await client.get(
+                "https://query1.finance.yahoo.com/v7/finance/quote",
+                params={"symbols": yf_symbols}
+            )
         if r.status_code != 200:
-            raise HTTPException(502, f"Yahoo Finance error: {r.status_code}")
-        ydata = r.json()
-        results = {}
-        for q in ydata.get("quoteResponse", {}).get("result", []):
-            sym = q.get("symbol","")
-            results[sym] = {
-                "c":   q.get("regularMarketPrice", 0),
-                "dp":  q.get("regularMarketChangePercent", 0),
-                "pc":  q.get("regularMarketPreviousClose", 0),
-            }
-        return results
+            raise HTTPException(502, f"Yahoo error: {r.status_code}")
+        return r.json()
     except (httpx.ReadTimeout, httpx.ConnectTimeout):
-        raise HTTPException(504, "Yahoo Finance timeout")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(502, f"Yahoo Finance error: {str(e)[:100]}")
+        raise HTTPException(504, "Yahoo timeout")
 
-SYMBOL_MAP = {
-    "SPY":  ("SPY500-BRL", "sp500"),
-    "QQQ":  ("QQQ-BRL",    "nasdaq"),
-    "DIA":  ("DIA-BRL",    "dow"),
-    "EWZ":  ("EWZ-BRL",    "brazil"),
-    "USO":  ("USO-BRL",    "oil"),
-    "BVSP": ("IBOVESPA-BRL","ibov"),
+GNEWS_TOPICS = {
+    "general": "https://news.google.com/rss?hl=pt-BR&gl=BR&ceid=BR:pt-419",
+    "forex": "https://news.google.com/rss/search?q=dólar+OR+câmbio+OR+forex&hl=pt-BR&gl=BR&ceid=BR:pt-419",
+    "crypto": "https://news.google.com/rss/search?q=bitcoin+OR+criptomoeda&hl=pt-BR&gl=BR&ceid=BR:pt-419",
 }
 
 @app.get("/api/proxy/finnhub/quote")
 async def proxy_finnhub_quote(symbol: str):
     try:
-        result = await _fh("/quote", {"symbol": symbol}, load_data())
-        if result and result.get("c", 0) > 0:
-            return result
+        result = await _fh("/quote", {"symbol": symbol}, FH_KEY)
+        return result
     except HTTPException:
-        pass
-    return {"c": 0, "d": 0, "dp": 0, "h": 0, "l": 0, "o": 0, "pc": 0, "t": 0, "_unavailable": True}
-
-GNEWS_TOPICS = {
-    "general": "https://news.google.com/rss/search?q=mercado+financeiro+economia&hl=pt-BR&gl=BR&ceid=BR:pt-419",
-    "forex":   "https://news.google.com/rss/search?q=câmbio+dólar+euro+forex&hl=pt-BR&gl=BR&ceid=BR:pt-419",
-    "crypto":  "https://news.google.com/rss/search?q=bitcoin+ethereum+criptomoeda&hl=pt-BR&gl=BR&ceid=BR:pt-419",
-    "merger":  "https://news.google.com/rss/search?q=fusão+aquisição+M%26A+empresa&hl=pt-BR&gl=BR&ceid=BR:pt-419",
-}
+        raise
 
 @app.get("/api/proxy/finnhub/news")
 async def proxy_finnhub_news(category: str = "general"):
     try:
-        result = await _fh("/news", {"category": category}, load_data())
-        if result and len(result) > 0:
-            return result
+        result = await _fh("/news", {"category": category}, FH_KEY)
+        return result
     except HTTPException:
         pass
 
@@ -796,15 +802,9 @@ async def proxy_finnhub_news(category: str = "general"):
             except Exception:
                 ts = int(time.time())
             items.append({
-                "category": category,
-                "datetime": ts,
-                "headline": title,
-                "id": abs(hash(link)),
-                "image": "",
-                "related": "",
-                "source": source,
-                "summary": title,
-                "url": link,
+                "category": category, "datetime": ts, "headline": title,
+                "id": abs(hash(link)), "image": "", "related": "",
+                "source": source, "summary": title, "url": link,
             })
         return items
     except Exception:
@@ -827,61 +827,43 @@ class PortfolioGoal(BaseModel):
     goal_label:    str   | None = None
     goal_deadline: str   | None = None
 
-@app.get("/api/portfolio", dependencies=[Depends(verify_token)])
-def get_portfolio():
-    return load_data()["portfolio"]
+@app.get("/api/portfolio")
+def get_portfolio(user: dict = Depends(auth.get_current_user)):
+    goal = data_repo.get_portfolio_goal(user["id"])
+    b3 = data_repo.get_b3_positions(user["id"])
+    return {
+        "assets": data_repo.get_portfolio_assets(user["id"]),
+        **goal,
+        "b3_positions": b3["positions"],
+        "b3_imported_at": b3["imported_at"],
+    }
 
-@app.post("/api/portfolio/assets", dependencies=[Depends(verify_token)])
-def add_asset(body: PortfolioAsset):
-    data = load_data()
-    assets = data["portfolio"]["assets"]
-    assets = [a for a in assets if a["id"] != body.id]
-    assets.append({
-        "id":        body.id,
-        "name":      body.name,
-        "pair":      body.pair,
-        "amount":    body.amount,
-        "buy_price": body.buy_price,
-        "buy_date":  body.buy_date or datetime.now().strftime("%Y-%m-%d"),
-        "added_at":  datetime.now().isoformat(),
-    })
-    data["portfolio"]["assets"] = assets
-    _grant_xp(data, "portfolio_add", 10)
-    save_data(data)
+@app.post("/api/portfolio/assets")
+def add_asset(body: PortfolioAsset, user: dict = Depends(auth.get_current_user)):
+    data_repo.add_asset(user["id"], body.model_dump())
+    data_repo.grant_xp(user["id"], "portfolio_add", 10)
     return {"ok": True}
 
-@app.delete("/api/portfolio/assets/{asset_id}", dependencies=[Depends(verify_token)])
-def remove_asset(asset_id: str):
-    data = load_data()
-    data["portfolio"]["assets"] = [a for a in data["portfolio"]["assets"] if a["id"] != asset_id]
-    save_data(data)
+@app.delete("/api/portfolio/assets/{asset_id}")
+def remove_asset(asset_id: str, user: dict = Depends(auth.get_current_user)):
+    data_repo.remove_asset(user["id"], asset_id)
     return {"ok": True}
 
-@app.put("/api/portfolio/goal", dependencies=[Depends(verify_token)])
-def update_goal(body: PortfolioGoal):
-    data = load_data()
-    for k, v in body.model_dump(exclude_none=True).items():
-        data["portfolio"][k] = v
-    save_data(data)
+@app.put("/api/portfolio/goal")
+def update_goal(body: PortfolioGoal, user: dict = Depends(auth.get_current_user)):
+    data_repo.update_goal(user["id"], body.model_dump(exclude_none=True))
     return {"ok": True}
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  IMPORTAÇÃO DE CARTEIRA B3 VIA CSV
+#  IMPORTAÇÃO DE CARTEIRA B3 VIA CSV (dados sensíveis — cifrados em repouso)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@app.post("/api/portfolio/import-csv", dependencies=[Depends(verify_token)])
-async def import_portfolio_csv(file: UploadFile = File(...)):
-    """
-    Importa extrato de posição da B3 em CSV.
-    Colunas esperadas: Produto, Instituição, Conta, Código de Negociação,
-                       Tipo, Escriturador, Quantidade, Quantidade Disponível,
-                       Quantidade Indisponível, Motivo
-    """
+@app.post("/api/portfolio/import-csv")
+async def import_portfolio_csv(file: UploadFile = File(...), user: dict = Depends(auth.get_current_user)):
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(400, "Envie um arquivo .csv")
 
     content = await file.read()
-    # Detecta encoding (B3 exporta em latin-1)
     for enc in ("utf-8-sig", "latin-1", "utf-8"):
         try:
             text = content.decode(enc)
@@ -893,7 +875,6 @@ async def import_portfolio_csv(file: UploadFile = File(...)):
 
     reader = csv.DictReader(io.StringIO(text), delimiter=";")
 
-    # Normaliza nomes de colunas (remove espaços, BOM, etc.)
     def norm(s):
         return s.strip().lstrip("\ufeff").lower()
 
@@ -903,8 +884,6 @@ async def import_portfolio_csv(file: UploadFile = File(...)):
     for row in reader:
         row_num += 1
         normalized = {norm(k): v.strip() for k, v in row.items() if k}
-
-        # Mapeamento flexível de colunas
         symbol_raw  = normalized.get("código de negociação") or normalized.get("codigo de negociacao") or normalized.get("codigo") or ""
         qty_raw     = normalized.get("quantidade disponível") or normalized.get("quantidade disponivel") or normalized.get("quantidade") or "0"
         institution = normalized.get("instituição") or normalized.get("instituicao") or normalized.get("corretora") or ""
@@ -914,116 +893,45 @@ async def import_portfolio_csv(file: UploadFile = File(...)):
         if not symbol:
             errors.append(f"Linha {row_num}: símbolo vazio, ignorada.")
             continue
-
         try:
             qty_clean = re.sub(r'[^\d]', '', qty_raw)
             quantity = int(qty_clean) if qty_clean else 0
         except ValueError:
             quantity = 0
-
         if quantity <= 0:
             errors.append(f"Linha {row_num}: {symbol} com quantidade zero/inválida, ignorada.")
             continue
 
-        positions.append({
-            "symbol": symbol,
-            "quantity": quantity,
-            "institution": institution,
-            "type": asset_type,
-        })
+        positions.append({"symbol": symbol, "quantity": quantity, "institution": institution, "type": asset_type})
 
     if not positions:
         raise HTTPException(422, f"Nenhuma posição válida encontrada no CSV. Erros: {'; '.join(errors[:5])}")
 
-    data = load_data()
-    # Garante que a chave existe
-    if "b3_positions" not in data["portfolio"]:
-        data["portfolio"]["b3_positions"] = []
-    data["portfolio"]["b3_positions"] = positions
-    data["portfolio"]["b3_imported_at"] = datetime.now().isoformat()
-    save_data(data)
+    data_repo.import_b3_positions(user["id"], positions)
 
-    return {
-        "ok": True,
-        "imported": len(positions),
-        "skipped": len(errors),
-        "positions": positions,
-        "warnings": errors[:10],
-    }
+    return {"ok": True, "imported": len(positions), "skipped": len(errors),
+            "positions": positions, "warnings": errors[:10]}
 
-@app.get("/api/portfolio/b3", dependencies=[Depends(verify_token)])
-def get_b3_positions():
-    data = load_data()
-    portfolio = data.get("portfolio", {})
-    return {
-        "positions": portfolio.get("b3_positions", []),
-        "imported_at": portfolio.get("b3_imported_at"),
-    }
+@app.get("/api/portfolio/b3")
+def get_b3_positions(user: dict = Depends(auth.get_current_user)):
+    return data_repo.get_b3_positions(user["id"])
 
-@app.delete("/api/portfolio/b3", dependencies=[Depends(verify_token)])
-def clear_b3_positions():
-    data = load_data()
-    data["portfolio"]["b3_positions"] = []
-    data["portfolio"].pop("b3_imported_at", None)
-    save_data(data)
+@app.delete("/api/portfolio/b3")
+def clear_b3_positions(user: dict = Depends(auth.get_current_user)):
+    data_repo.clear_b3_positions(user["id"])
     return {"ok": True}
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  SISTEMA DE NÍVEIS / XP
 # ══════════════════════════════════════════════════════════════════════════════
 
-LEVEL_THRESHOLDS = {"iniciante": 0, "intermediario": 100, "avancado": 300}
-LEVEL_LABELS     = {
-    "iniciante":     "Iniciante",
-    "intermediario": "Intermediário",
-    "avancado":      "Avançado",
-}
-XP_EVENTS = {
-    "login":         5,
-    "chat_message":  8,
-    "portfolio_add": 10,
-    "alert_set":     5,
-    "profile_complete": 15,
-}
+@app.get("/api/level")
+def get_level(user: dict = Depends(auth.get_current_user)):
+    return data_repo.get_level(user["id"])
 
-def _grant_xp(data: dict, event: str, pts: Optional[int] = None) -> dict:
-    pts = pts or XP_EVENTS.get(event, 0)
-    profile = data["profile"]
-    old_level = profile.get("level", "iniciante")
-    profile["xp"] = profile.get("xp", 0) + pts
-
-    new_level = old_level
-    for lvl, threshold in sorted(LEVEL_THRESHOLDS.items(), key=lambda x: -x[1]):
-        if profile["xp"] >= threshold:
-            new_level = lvl
-            break
-
-    profile["level"] = new_level
-    leveled_up = new_level != old_level
-    return {"xp": profile["xp"], "level": new_level, "leveled_up": leveled_up, "level_label": LEVEL_LABELS[new_level]}
-
-@app.get("/api/level", dependencies=[Depends(verify_token)])
-def get_level():
-    data = load_data()
-    p = data["profile"]
-    xp = p.get("xp", 0)
-    level = p.get("level", "iniciante")
-    next_thresholds = {k: v for k, v in LEVEL_THRESHOLDS.items() if v > LEVEL_THRESHOLDS.get(level, 0)}
-    next_xp = min(next_thresholds.values()) if next_thresholds else None
-    return {
-        "xp": xp,
-        "level": level,
-        "level_label": LEVEL_LABELS.get(level, "Iniciante"),
-        "next_level_xp": next_xp,
-        "progress_pct": int(min(100, (xp / next_xp * 100))) if next_xp else 100,
-    }
-
-@app.post("/api/level/event", dependencies=[Depends(verify_token)])
-def register_event(event: str):
-    data = load_data()
-    result = _grant_xp(data, event)
-    save_data(data)
-    return result
+@app.post("/api/level/event")
+def register_event(event: str, user: dict = Depends(auth.get_current_user)):
+    return data_repo.grant_xp(user["id"], event)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  JARVIS — IA PROATIVA
@@ -1034,22 +942,19 @@ class JarvisIn(BaseModel):
     portfolio_value: Optional[float] = None
     last_insight_at: Optional[str] = None
 
-@app.post("/api/jarvis/insight", dependencies=[Depends(verify_token)])
-async def jarvis_insight(body: JarvisIn):
-    data = load_data()
-    profile = data["profile"]
-    portfolio = data["portfolio"]
-    or_key = OR_KEY or data.get("api_keys", {}).get("openrouter", "")
+@app.post("/api/jarvis/insight")
+async def jarvis_insight(body: JarvisIn, user: dict = Depends(auth.get_current_user)):
+    profile = data_repo.get_profile(user["id"])
+    assets = data_repo.get_portfolio_assets(user["id"])
+    goal = data_repo.get_portfolio_goal(user["id"])
+    or_key = _user_or_key(user)
     if not or_key:
         raise HTTPException(503, "Chave OpenRouter não configurada.")
 
     name     = profile.get("display_name", "investidor")
     inv_type = profile.get("investor_type", "moderado")
     level    = profile.get("level", "iniciante")
-    assets   = portfolio.get("assets", [])
-    goal     = portfolio.get("goal_label", "")
 
-    portfolio_str = ""
     if assets:
         lines = [f"- {a['name']}: {a['amount']} unidades (comprado a R${a['buy_price']:.2f})" for a in assets]
         portfolio_str = "Portfólio do usuário:\n" + "\n".join(lines)
@@ -1059,7 +964,7 @@ async def jarvis_insight(body: JarvisIn):
     prompt = f"""Você é o EconRadar, assessor financeiro pessoal de {name} (perfil {inv_type}, nível {level}).
 
 {portfolio_str}
-Meta financeira: {goal or 'não definida'}
+Meta financeira: {goal.get('goal_label') or 'não definida'}
 Contexto de mercado agora: {body.market_context[:800]}
 
 SUA TAREFA: analise SE há algo realmente relevante para avisar este investidor AGORA.
@@ -1086,30 +991,23 @@ Retorne APENAS o JSON, sem markdown, sem explicação."""
     except HTTPException:
         return {"insight": "", "type": "none"}
 
-    raw = raw.replace("```json","").replace("```","").strip()
-    match = re.search(r'\{[\s\S]*\}', raw)
-    if not match:
+    raw = raw.replace("```json", "").replace("```", "").strip()
+    try:
+        result = _safe_json(raw, "jarvis insight")
+    except HTTPException:
         return {"insight": "", "type": "none"}
 
-    result = json.loads(match.group(0))
-
     if result.get("insight"):
-        data["jarvis_insights"].append({
-            **result,
-            "generated_at": datetime.now().isoformat()
-        })
-        data["jarvis_insights"] = data["jarvis_insights"][-50:]
-        save_data(data)
-
+        data_repo.add_jarvis_insight(user["id"], result["insight"], result.get("type", "dica"),
+                                      result.get("asset"), result.get("urgency"))
     return result
 
-@app.get("/api/jarvis/history", dependencies=[Depends(verify_token)])
-def jarvis_history():
-    data = load_data()
-    return list(reversed(data.get("jarvis_insights", [])[:20]))
+@app.get("/api/jarvis/history")
+def jarvis_history(user: dict = Depends(auth.get_current_user)):
+    return data_repo.get_jarvis_insights(user["id"], limit=20)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  v1.4 — SCORE DE MOMENTO
+#  SCORE DE MOMENTO
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ScoreIn(BaseModel):
@@ -1122,11 +1020,10 @@ class ScoreIn(BaseModel):
     low_hist:   Optional[str] = None
     var_30d:    Optional[float] = None
 
-@app.post("/api/score/moment", dependencies=[Depends(verify_token)])
-async def score_moment(body: ScoreIn):
-    data    = load_data()
-    profile = data["profile"]
-    or_key = OR_KEY or data.get("api_keys", {}).get("openrouter", "")
+@app.post("/api/score/moment")
+async def score_moment(body: ScoreIn, user: dict = Depends(auth.get_current_user)):
+    profile = data_repo.get_profile(user["id"])
+    or_key = _user_or_key(user)
     if not or_key:
         raise HTTPException(503, "Chave OpenRouter não configurada.")
 
@@ -1170,13 +1067,10 @@ Retorne APENAS este JSON (sem markdown):
         max_tokens=400, temperature=0.3, timeout=15
     )
     raw = raw.replace("```json", "").replace("```", "").strip()
-    match = re.search(r'\{[\s\S]*\}', raw)
-    if not match:
-        raise HTTPException(502, f"Formato inválido: {raw[:100]}")
-    return json.loads(match.group(0))
+    return _safe_json(raw, "score momento")
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  v1.4 — SIMULADOR DE CENÁRIOS
+#  SIMULADOR DE CENÁRIOS (feature 'pro' — exemplo de uso de require_plan)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ScenarioIn(BaseModel):
@@ -1184,11 +1078,10 @@ class ScenarioIn(BaseModel):
     affected_assets: list[str]
     portfolio_snapshot: str
 
-@app.post("/api/scenario/simulate", dependencies=[Depends(verify_token)])
-async def simulate_scenario(body: ScenarioIn):
-    data    = load_data()
-    profile = data["profile"]
-    or_key = OR_KEY or data.get("api_keys", {}).get("openrouter", "")
+@app.post("/api/scenario/simulate")
+async def simulate_scenario(body: ScenarioIn, user: dict = Depends(auth.require_plan("pro"))):
+    profile = data_repo.get_profile(user["id"])
+    or_key = _user_or_key(user)
     if not or_key:
         raise HTTPException(503, "Chave OpenRouter não configurada.")
 
@@ -1225,13 +1118,10 @@ Retorne APENAS este JSON (sem markdown):
         max_tokens=500, temperature=0.4, timeout=20
     )
     raw = raw.replace("```json", "").replace("```", "").strip()
-    match = re.search(r'\{[\s\S]*\}', raw)
-    if not match:
-        raise HTTPException(502, f"Formato inválido: {raw[:100]}")
-    return json.loads(match.group(0))
+    return _safe_json(raw, "simulação de cenário")
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  v1.4 — RELATÓRIO MENSAL PDF
+#  RELATÓRIO MENSAL PDF (feature 'pro' — exemplo de uso de require_plan)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ReportIn(BaseModel):
@@ -1239,18 +1129,16 @@ class ReportIn(BaseModel):
     market_context:     str
     period_label:       Optional[str] = None
 
-@app.post("/api/report/generate", dependencies=[Depends(verify_token)])
-async def generate_report(body: ReportIn):
-    data    = load_data()
-    profile = data["profile"]
-    or_key = OR_KEY or data.get("api_keys", {}).get("openrouter", "")
+@app.post("/api/report/generate")
+async def generate_report(body: ReportIn, user: dict = Depends(auth.require_plan("pro"))):
+    profile = data_repo.get_profile(user["id"])
+    or_key = _user_or_key(user)
     if not or_key:
         raise HTTPException(503, "Chave OpenRouter não configurada.")
 
     name     = profile.get("display_name", "Investidor")
     inv_type = profile.get("investor_type", "moderado")
-    level    = profile.get("level", "iniciante")
-    goal     = data["portfolio"].get("goal_label", "")
+    goal     = data_repo.get_portfolio_goal(user["id"]).get("goal_label", "")
     period   = body.period_label or datetime.now().strftime("%B %Y")
 
     prompt = f"""Assessor financeiro de {name}. Gere relatório mensal em JSON.
@@ -1274,42 +1162,30 @@ JSON exato (sem markdown, sem explicação):
     match = re.search(r'\{[\s\S]*\}', raw)
     if not match:
         raise HTTPException(502, f"Formato inválido: {raw[:100]}")
-
     try:
         result = json.loads(match.group(0))
     except json.JSONDecodeError as e:
         raise HTTPException(502, f"JSON incompleto - tente novamente. Detalhe: {str(e)[:80]}")
 
-    data["night_summaries"].append({
-        "summary_text": result.get("resumo_executivo", ""),
-        "instab_score": 0,
-        "generated_at": datetime.now().isoformat(),
-        "type": "monthly_report",
-        "period": period,
-        "full_report": result
-    })
-    data["night_summaries"] = data["night_summaries"][-30:]
-    save_data(data)
+    data_repo.add_night_summary(
+        user["id"], result.get("resumo_executivo", ""), 0,
+        type_="monthly_report", period_label=period, full_report=result,
+    )
     return result
 
-@app.get("/api/report/history", dependencies=[Depends(verify_token)])
-def report_history():
-    data = load_data()
-    reports = [s for s in data.get("night_summaries", []) if s.get("type") == "monthly_report"]
-    return list(reversed(reports[-12:]))
+@app.get("/api/report/history")
+def report_history(user: dict = Depends(auth.require_plan("pro"))):
+    return data_repo.get_night_summaries(user["id"], type_="monthly_report", limit=12)
 
 # ── Health ─────────────────────────────────────────────────────────────────────
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "1.0.0-foundation"}
+    return {"status": "ok", "version": "2.0.0-multiuser"}
 
-@app.get("/api/health/keys", dependencies=[Depends(verify_token)])
-async def check_keys():
-    data = load_data()
-    or_key = OR_KEY or data.get("api_keys", {}).get("openrouter", "")
-    result = {
-        "openrouter": {"configured": bool(or_key), "valid": None, "error": None},
-    }
+@app.get("/api/health/keys")
+async def check_keys(user: dict = Depends(auth.get_current_user)):
+    or_key = _user_or_key(user)
+    result = {"openrouter": {"configured": bool(or_key), "valid": None, "error": None}}
     if or_key:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
