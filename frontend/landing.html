@@ -518,7 +518,7 @@ footer{
   </div>
   <div class="nav-cta">
     <a href="#" onclick="showLoginModal()" class="btn-ghost">Login</a>
-    <a href="#" onclick="showLoginModal()" class="btn-gold">Começar grátis</a>
+    <a href="#" onclick="showRegisterModal()" class="btn-gold">Começar grátis</a>
   </div>
 </nav>
 
@@ -723,7 +723,7 @@ footer{
       Acesse o EconRadar gratuitamente e comece a monitorar os mercados com inteligência artificial.
     </p>
     <div class="cta-btns reveal reveal-delay-3">
-      <a href="#" onclick="showLoginModal()" class="btn-large primary">
+      <a href="#" onclick="showRegisterModal()" class="btn-large primary">
         Criar conta grátis
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
       </a>
@@ -875,24 +875,46 @@ function buildTicker() {
 buildTicker();
 </script>
 
-<!-- Modal de Login -->
+<!-- Modal de Login / Cadastro -->
 <div id="login-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.75);backdrop-filter:blur(6px);display:none;align-items:center;justify-content:center">
   <div style="background:#0d1018;border:1px solid rgba(201,168,76,.2);border-radius:16px;padding:40px;width:360px;font-family:'Syne',sans-serif;position:relative">
     <button onclick="hideLoginModal()" style="position:absolute;top:16px;right:16px;background:none;border:none;color:#4a4640;font-size:20px;cursor:pointer;line-height:1">×</button>
     <div style="font-family:'Playfair Display',serif;font-size:24px;font-weight:900;color:#e8e4d8;margin-bottom:4px">EconRadar</div>
-    <div style="font-size:12px;color:#4a4640;font-family:'DM Mono',monospace;letter-spacing:.08em;margin-bottom:28px">ACESSO À PLATAFORMA</div>
+    <div style="font-size:12px;color:#4a4640;font-family:'DM Mono',monospace;letter-spacing:.08em;margin-bottom:20px">ACESSO À PLATAFORMA</div>
+
+    <div style="display:flex;gap:4px;margin-bottom:20px;background:#111520;border-radius:10px;padding:4px">
+      <div id="ln-tab-login" data-active="1" onclick="lnTab('login')"
+        style="flex:1;text-align:center;padding:8px;border-radius:8px;font-size:12px;font-weight:700;font-family:'Syne',sans-serif;cursor:pointer;background:linear-gradient(135deg,#c9a84c,#e0ba5a);color:#080a0f;letter-spacing:.03em">ENTRAR</div>
+      <div id="ln-tab-register" onclick="lnTab('register')"
+        style="flex:1;text-align:center;padding:8px;border-radius:8px;font-size:12px;font-weight:700;font-family:'Syne',sans-serif;cursor:pointer;color:#4a4640;letter-spacing:.03em">CRIAR CONTA</div>
+    </div>
+
+    <div id="ln-register-fields" style="display:none">
+      <div style="margin-bottom:14px">
+        <input id="ln-name" placeholder="Nome" autocomplete="name"
+          style="width:100%;box-sizing:border-box;padding:12px 14px;border-radius:8px;border:1px solid rgba(201,168,76,.15);background:#111520;color:#e8e4d8;font-size:13px;font-family:'Syne',sans-serif;outline:none"/>
+      </div>
+      <div style="margin-bottom:14px">
+        <input id="ln-email" type="email" placeholder="E-mail" autocomplete="email"
+          style="width:100%;box-sizing:border-box;padding:12px 14px;border-radius:8px;border:1px solid rgba(201,168,76,.15);background:#111520;color:#e8e4d8;font-size:13px;font-family:'Syne',sans-serif;outline:none"/>
+      </div>
+    </div>
+
     <div style="margin-bottom:14px">
       <input id="ln-user" placeholder="Usuário" autocomplete="username"
         style="width:100%;box-sizing:border-box;padding:12px 14px;border-radius:8px;border:1px solid rgba(201,168,76,.15);background:#111520;color:#e8e4d8;font-size:13px;font-family:'Syne',sans-serif;outline:none"
         onkeydown="if(event.key==='Enter')document.getElementById('ln-pass').focus()"/>
+      <div id="ln-user-hint" style="display:none;font-size:11px;color:#4a4640;font-family:'DM Mono',monospace;margin-top:5px">Login também pode ser feito com o e-mail.</div>
     </div>
-    <div style="margin-bottom:20px">
+    <div style="margin-bottom:8px">
       <input id="ln-pass" type="password" placeholder="Senha" autocomplete="current-password"
         style="width:100%;box-sizing:border-box;padding:12px 14px;border-radius:8px;border:1px solid rgba(201,168,76,.15);background:#111520;color:#e8e4d8;font-size:13px;font-family:'Syne',sans-serif;outline:none"
-        onkeydown="if(event.key==='Enter')doLogin()"/>
+        onkeydown="if(event.key==='Enter')doSubmitAuth()"/>
     </div>
-    <div id="ln-err" style="display:none;color:#ff4757;font-size:12px;margin-bottom:14px;font-family:'DM Mono',monospace"></div>
-    <button onclick="doLogin()"
+    <div id="ln-pass-hint" style="display:none;font-size:11px;color:#4a4640;font-family:'DM Mono',monospace;margin-bottom:14px">Mínimo de 8 caracteres.</div>
+
+    <div id="ln-err" style="display:none;color:#ff4757;font-size:12px;margin:10px 0 14px;font-family:'DM Mono',monospace"></div>
+    <button id="ln-submit-btn" onclick="doSubmitAuth()"
       style="width:100%;padding:13px;border-radius:8px;border:none;background:linear-gradient(135deg,#c9a84c,#e0ba5a);color:#080a0f;font-size:13px;font-weight:700;font-family:'Syne',sans-serif;cursor:pointer;letter-spacing:.05em">
       ENTRAR
     </button>
@@ -908,29 +930,80 @@ function showLoginModal() {
 function hideLoginModal() {
   document.getElementById('login-modal').style.display = 'none';
 }
-// Fechar clicando fora
 document.getElementById('login-modal').addEventListener('click', function(e) {
   if (e.target === this) hideLoginModal();
 });
 
-async function doLogin() {
+function showRegisterModal() {
+  showLoginModal();
+  lnTab('register');
+}
+
+function lnTab(tab) {
+  const isLogin = tab === 'login';
+  document.getElementById('ln-register-fields').style.display = isLogin ? 'none' : '';
+  document.getElementById('ln-user-hint').style.display        = isLogin ? '' : 'none';
+  document.getElementById('ln-pass-hint').style.display        = isLogin ? 'none' : '';
+  document.getElementById('ln-user').placeholder                = isLogin ? 'Usuário' : 'Usuário (3-30 caracteres)';
+  document.getElementById('ln-submit-btn').textContent          = isLogin ? 'ENTRAR' : 'CRIAR CONTA GRÁTIS';
+  document.getElementById('ln-tab-login').style.background      = isLogin ? 'linear-gradient(135deg,#c9a84c,#e0ba5a)' : 'transparent';
+  document.getElementById('ln-tab-login').style.color           = isLogin ? '#080a0f' : '#4a4640';
+  document.getElementById('ln-tab-register').style.background   = isLogin ? 'transparent' : 'linear-gradient(135deg,#c9a84c,#e0ba5a)';
+  document.getElementById('ln-tab-register').style.color        = isLogin ? '#4a4640' : '#080a0f';
+  document.getElementById('ln-tab-login').dataset.active     = isLogin ? '1' : '';
+  document.getElementById('ln-tab-register').dataset.active  = isLogin ? '' : '1';
+  document.getElementById('ln-err').style.display = 'none';
+}
+
+async function doSubmitAuth() {
+  const isLogin  = document.getElementById('ln-tab-login').dataset.active === '1';
   const username = document.getElementById('ln-user').value.trim();
   const password = document.getElementById('ln-pass').value;
   const errEl    = document.getElementById('ln-err');
-  const btn      = document.querySelector('#login-modal button[onclick="doLogin()"]');
+  const btn      = document.getElementById('ln-submit-btn');
   errEl.style.display = 'none';
-  btn.textContent = 'ENTRANDO…';
+
+  if (isLogin) {
+    if (!username || !password) {
+      errEl.textContent = 'Preencha usuário/e-mail e senha.';
+      errEl.style.display = 'block';
+      return;
+    }
+  } else {
+    const name  = document.getElementById('ln-name').value.trim();
+    const email = document.getElementById('ln-email').value.trim();
+    if (!name || !email || !username || !password) {
+      errEl.textContent = 'Preencha todos os campos.';
+      errEl.style.display = 'block';
+      return;
+    }
+    if (password.length < 8) {
+      errEl.textContent = 'A senha deve ter ao menos 8 caracteres.';
+      errEl.style.display = 'block';
+      return;
+    }
+  }
+
+  btn.textContent = isLogin ? 'ENTRANDO…' : 'CRIANDO CONTA…';
   btn.disabled = true;
   try {
-    await Auth.login(username, password);
+    if (isLogin) {
+      await Auth.login(username, password);
+    } else {
+      const name  = document.getElementById('ln-name').value.trim();
+      const email = document.getElementById('ln-email').value.trim();
+      await Auth.register(email, username, password, name);
+    }
     window.location.href = '/app';
   } catch(e) {
-    errEl.textContent = e.message || 'Usuário ou senha incorretos';
+    errEl.textContent = e.message || 'Não foi possível concluir. Tente novamente.';
     errEl.style.display = 'block';
-    btn.textContent = 'ENTRAR';
+    btn.textContent = isLogin ? 'ENTRAR' : 'CRIAR CONTA GRÁTIS';
     btn.disabled = false;
   }
 }
+
+async function doLogin() { return doSubmitAuth(); }
 
 // Se já estiver logado, redireciona direto para /app
 if (typeof isLoggedIn === 'function' && isLoggedIn()) {

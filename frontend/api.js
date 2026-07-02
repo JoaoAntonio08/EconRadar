@@ -4,15 +4,42 @@
 const API_BASE = window.ECONRADAR_API || 'http://localhost:8000/api';
 
 // ── Token JWT ─────────────────────────────────────────────
-function getToken()        { return localStorage.getItem('er_token'); }
-function setToken(t)       { localStorage.setItem('er_token', t); }
-function clearToken()      { localStorage.removeItem('er_token'); localStorage.removeItem('er_user'); }
-function getUser()         { try { return JSON.parse(localStorage.getItem('er_user') || 'null'); } catch { return null; } }
-function setUser(u)        { localStorage.setItem('er_user', JSON.stringify(u)); }
-function isLoggedIn()      { return !!getToken(); }
+function getToken()          { return localStorage.getItem('er_token'); }
+function setToken(t)         { localStorage.setItem('er_token', t); }
+function getRefreshToken()   { return localStorage.getItem('er_refresh'); }
+function setRefreshToken(t)  { localStorage.setItem('er_refresh', t); }
+function clearToken()        {
+  localStorage.removeItem('er_token');
+  localStorage.removeItem('er_refresh');
+  localStorage.removeItem('er_user');
+}
+function getUser()           { try { return JSON.parse(localStorage.getItem('er_user') || 'null'); } catch { return null; } }
+function setUser(u)          { localStorage.setItem('er_user', JSON.stringify(u)); }
+function isLoggedIn()        { return !!getToken(); }
 
-// ── Fetch autenticado ─────────────────────────────────────
-async function apiFetch(path, options = {}) {
+// ── Fetch autenticado (com refresh automático em 401) ──────
+let _refreshInFlight = null;
+
+async function _doRefresh() {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return false;
+  try {
+    const res = await fetch(API_BASE + '/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    setToken(data.access_token);
+    setRefreshToken(data.refresh_token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function apiFetch(path, options = {}, _isRetry = false) {
   const token = getToken();
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
   if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -20,6 +47,13 @@ async function apiFetch(path, options = {}) {
   const res = await fetch(API_BASE + path, { ...options, headers });
 
   if (res.status === 401) {
+    // O access token dura pouco (30 min) de propósito — tenta renovar
+    // silenciosamente com o refresh token antes de deslogar o usuário.
+    if (!_isRetry && getRefreshToken()) {
+      if (!_refreshInFlight) _refreshInFlight = _doRefresh().finally(() => { _refreshInFlight = null; });
+      const refreshed = await _refreshInFlight;
+      if (refreshed) return apiFetch(path, options, true);
+    }
     clearToken();
     window.location.href = '/';
     throw new Error('Sessão expirada. Faça login novamente.');
@@ -33,13 +67,38 @@ async function apiFetch(path, options = {}) {
 
 // ── Auth ──────────────────────────────────────────────────
 const Auth = {
-  async login(username, password) {
-    const data = await apiFetch('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+  async _afterAuth(data) {
     setToken(data.access_token);
-    setUser({ id: data.user_id, email: data.email, display_name: data.display_name });
-    return data;
+    setRefreshToken(data.refresh_token);
+    // login/register não devolvem o perfil completo — busca em seguida
+    try {
+      const me = await apiFetch('/auth/me');
+      setUser(me);
+      return me;
+    } catch {
+      setUser({ display_name: data.display_name });
+      return { display_name: data.display_name };
+    }
   },
-  logout() {
+  async login(identifier, password) {
+    const data = await apiFetch('/auth/login', { method: 'POST', body: JSON.stringify({ username: identifier, password }) });
+    return this._afterAuth(data);
+  },
+  async register(email, username, password, displayName) {
+    const data = await apiFetch('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ email, username, password, display_name: displayName || username }),
+    });
+    return this._afterAuth(data);
+  },
+  async logout() {
+    const refreshToken = getRefreshToken();
+    if (refreshToken) {
+      try { await fetch(API_BASE + '/auth/logout', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      }); } catch {}
+    }
     clearToken();
     window.location.href = '/';
   }
@@ -92,18 +151,34 @@ function buildAuthModal() {
 <div id="er-auth-backdrop" style="position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center">
   <div style="background:var(--bg1,#1a1d2e);border:1px solid var(--border,#2a2d3e);border-radius:16px;padding:32px;width:340px;font-family:var(--font-b,'sans-serif')">
     <div style="font-size:22px;font-weight:700;color:var(--text1,#fff);margin-bottom:4px">EconRadar</div>
-    <div style="font-size:13px;color:var(--text3,#888);margin-bottom:24px">Faça login para continuar</div>
+    <div style="font-size:13px;color:var(--text3,#888);margin-bottom:20px">Acesse sua conta ou crie uma gratuitamente</div>
+
+    <div style="display:flex;gap:4px;margin-bottom:20px;background:var(--bg2,#252836);border-radius:10px;padding:4px">
+      <div id="er-tab-login" data-active="1" onclick="erTab('login')" style="flex:1;text-align:center;padding:8px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;background:var(--accent,#4f8dff);color:#fff">Entrar</div>
+      <div id="er-tab-register" onclick="erTab('register')" style="flex:1;text-align:center;padding:8px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;color:var(--text2,#aaa)">Criar conta</div>
+    </div>
+
+    <div id="er-register-fields" style="display:none">
+      <div style="margin-bottom:12px">
+        <input id="er-inp-name" placeholder="Nome" style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid var(--border,#2a2d3e);background:var(--bg2,#252836);color:var(--text1,#fff);font-size:13px"/>
+      </div>
+      <div style="margin-bottom:12px">
+        <input id="er-inp-email" type="email" placeholder="E-mail" style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid var(--border,#2a2d3e);background:var(--bg2,#252836);color:var(--text1,#fff);font-size:13px"/>
+      </div>
+    </div>
 
     <div style="margin-bottom:12px">
-      <input id="er-inp-email" placeholder="Usuário" style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid var(--border,#2a2d3e);background:var(--bg2,#252836);color:var(--text1,#fff);font-size:13px"/>
+      <input id="er-inp-username" placeholder="Usuário" style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid var(--border,#2a2d3e);background:var(--bg2,#252836);color:var(--text1,#fff);font-size:13px"/>
+      <div id="er-username-hint" style="display:none;font-size:11px;color:var(--text3,#888);margin-top:4px">Login também pode ser feito com o e-mail.</div>
     </div>
-    <div style="margin-bottom:20px">
+    <div style="margin-bottom:8px">
       <input id="er-inp-pass" type="password" placeholder="Senha" style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid var(--border,#2a2d3e);background:var(--bg2,#252836);color:var(--text1,#fff);font-size:13px"/>
     </div>
+    <div id="er-pass-hint" style="display:none;font-size:11px;color:var(--text3,#888);margin-bottom:12px">Mínimo de 8 caracteres.</div>
 
     <div id="er-auth-err" style="display:none;color:#ff5063;font-size:12px;margin-bottom:12px"></div>
 
-    <button onclick="erSubmitAuth()" style="width:100%;padding:11px;border-radius:10px;border:none;background:linear-gradient(135deg,var(--accent,#4f8dff),#7c5cfc);color:#fff;font-size:14px;font-weight:600;cursor:pointer">Entrar</button>
+    <button id="er-submit-btn" onclick="erSubmitAuth()" style="width:100%;padding:11px;border-radius:10px;border:none;background:linear-gradient(135deg,var(--accent,#4f8dff),#7c5cfc);color:#fff;font-size:14px;font-weight:600;cursor:pointer">Entrar</button>
   </div>
 </div>`;
   document.body.appendChild(el);
@@ -121,22 +196,38 @@ function hideAuthModal() {
 
 window.erTab = function(tab) {
   const isLogin = tab === 'login';
-  document.getElementById('er-register-name').style.display = isLogin ? 'none' : '';
+  document.getElementById('er-register-fields').style.display = isLogin ? 'none' : '';
+  document.getElementById('er-username-hint').style.display   = isLogin ? '' : 'none';
+  document.getElementById('er-pass-hint').style.display       = isLogin ? 'none' : '';
+  document.getElementById('er-inp-username').placeholder      = isLogin ? 'Usuário ou e-mail' : 'Usuário';
+  document.getElementById('er-submit-btn').textContent        = isLogin ? 'Entrar' : 'Criar conta grátis';
   document.getElementById('er-tab-login').style.background    = isLogin ? 'var(--accent,#4f8dff)' : 'transparent';
   document.getElementById('er-tab-login').style.color         = isLogin ? '#fff' : 'var(--text2,#aaa)';
   document.getElementById('er-tab-register').style.background = isLogin ? 'transparent' : 'var(--accent,#4f8dff)';
   document.getElementById('er-tab-register').style.color      = isLogin ? 'var(--text2,#aaa)' : '#fff';
   document.getElementById('er-tab-login').dataset.active    = isLogin ? '1' : '';
   document.getElementById('er-tab-register').dataset.active = isLogin ? '' : '1';
+  document.getElementById('er-auth-err').style.display = 'none';
 };
 
 window.erSubmitAuth = async function() {
-  const username = document.getElementById('er-inp-email').value.trim();
+  const isLogin  = document.getElementById('er-tab-login').dataset.active === '1';
+  const username = document.getElementById('er-inp-username').value.trim();
   const password = document.getElementById('er-inp-pass').value;
   const errEl    = document.getElementById('er-auth-err');
   errEl.style.display = 'none';
+
   try {
-    await Auth.login(username, password);
+    if (isLogin) {
+      if (!username || !password) throw new Error('Preencha usuário/e-mail e senha.');
+      await Auth.login(username, password);
+    } else {
+      const name  = document.getElementById('er-inp-name').value.trim();
+      const email = document.getElementById('er-inp-email').value.trim();
+      if (!name || !email || !username || !password) throw new Error('Preencha todos os campos.');
+      if (password.length < 8) throw new Error('A senha deve ter ao menos 8 caracteres.');
+      await Auth.register(email, username, password, name);
+    }
     hideAuthModal();
     window.dispatchEvent(new CustomEvent('er:loggedin'));
   } catch(e) {

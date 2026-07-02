@@ -2439,7 +2439,26 @@ function buildMktContext() {
   const lines = Object.entries(mkt).map(([k,v]) =>
     `${k.toUpperCase()}: ${v.price?.toFixed(4)||'?'} (${v.chgPct>=0?'+':''}${v.chgPct?.toFixed(2)||'0'}% hoje)`
   );
-  return lines.join('\n');
+  let ctx = lines.join('\n');
+
+  // Injeta carteira B3 no contexto se disponível
+  const b3 = b3Positions || [];
+  const manual = (jornadaPortfolio && jornadaPortfolio.assets) || [];
+
+  if (b3.length > 0) {
+    const b3str = b3.map(p => `${p.symbol} (${p.quantity} ações via ${p.institution})`).join(', ');
+    ctx += `\n\n[CARTEIRA B3 DO USUÁRIO — use APENAS estes ativos ao analisar a carteira]: ${b3str}`;
+    ctx += `\nIMPORTANTE: Não mencione ativos que não estejam listados acima. Se não souber o preço atual, diga que não tem a cotação disponível.`;
+  }
+  if (manual.length > 0) {
+    const manstr = manual.map(a => `${a.name} (${a.amount} unid. @ R$${a.buy_price})`).join(', ');
+    ctx += `\n[PORTFÓLIO MANUAL DO USUÁRIO]: ${manstr}`;
+  }
+  if (b3.length === 0 && manual.length === 0) {
+    ctx += `\n\n[CARTEIRA DO USUÁRIO]: Nenhum ativo cadastrado ainda.`;
+  }
+
+  return ctx;
 }
 
 function aiAutoResize(ta) {
@@ -3018,9 +3037,11 @@ async function loadB3Portfolio() {
 }
 
 async function fetchB3Price(symbol, qty) {
+  // Ações brasileiras precisam do sufixo .SA no Finnhub
+  const fhSymbol = symbol.includes('.') ? symbol : `${symbol}.SA`;
   try {
-    const data = await apiFetch(`/proxy/finnhub/quote?symbol=${symbol}`);
-    if (data && data.c && !data._unavailable) {
+    const data = await apiFetch(`/proxy/finnhub/quote?symbol=${fhSymbol}`);
+    if (data && data.c && data.c > 0 && !data._unavailable) {
       const price = data.c;
       const value = price * qty;
       const priceEl = document.getElementById(`b3price-${symbol}`);
@@ -3353,9 +3374,18 @@ function renderLevelBadge() {
 }
 
 // ── Portfólio ─────────────────────────────────────────────
+let b3Positions = []; // posições importadas da B3
+
 async function loadPortfolio() {
   try {
     jornadaPortfolio = await Portfolio.get();
+    // Carrega também as posições da B3 e mescla nos stats
+    try {
+      const b3data = await apiFetch('/portfolio/b3');
+      b3Positions = b3data.positions || [];
+    } catch(e) {
+      b3Positions = [];
+    }
     renderPortfolioList();
     renderGoalFields();
     updateJornadaStats();
@@ -3374,8 +3404,18 @@ function fmtNum(n) {
 function renderPortfolioList() {
   const el = document.getElementById('portfolio-list');
   const assets = jornadaPortfolio.assets || [];
+  const hasB3 = b3Positions && b3Positions.length > 0;
+
   if (!assets.length) {
-    el.innerHTML = `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:32px;text-align:center;color:var(--text3);font-size:13px"><div style="font-size:28px;margin-bottom:8px">📊</div>Nenhum ativo cadastrado ainda.<br>Clique em "Adicionar ativo" para começar.</div>`;
+    el.innerHTML = `
+      ${hasB3 ? `<div style="background:rgba(79,141,255,.07);border:1px solid rgba(79,141,255,.25);border-radius:12px;padding:14px 16px;margin-bottom:12px;display:flex;align-items:center;gap:10px">
+        <div style="font-size:20px">📋</div>
+        <div>
+          <div style="font-size:12px;font-weight:600;color:var(--accent);margin-bottom:2px">Carteira B3 importada — ${b3Positions.length} ativo(s)</div>
+          <div style="font-size:11px;color:var(--text3)">Os valores estão sendo somados ao total acima. Para ver P&L, adicione o preço médio de compra abaixo.</div>
+        </div>
+      </div>` : ''}
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:32px;text-align:center;color:var(--text3);font-size:13px"><div style="font-size:28px;margin-bottom:8px">📊</div>Nenhum ativo cadastrado ainda.<br>Clique em "Adicionar ativo" para começar.</div>`;
     return;
   }
   el.innerHTML = assets.map(a => {
@@ -3404,6 +3444,8 @@ function renderPortfolioList() {
 function updateJornadaStats() {
   const assets = jornadaPortfolio.assets || [];
   let total = 0, cost = 0, bestAsset = null, bestPct = -Infinity;
+
+  // Portfólio manual (com preço médio de compra)
   assets.forEach(a => {
     const p = getAssetCurrentPrice(a.id);
     if (p) {
@@ -3413,12 +3455,66 @@ function updateJornadaStats() {
       if (pct > bestPct) { bestPct = pct; bestAsset = a; }
     }
   });
+
+  // Soma posições B3 ao total (sem custo conhecido → conta só o valor atual)
+  let b3Total = 0;
+  const b3PricePromises = b3Positions.map(async pos => {
+    try {
+      const fhSym = pos.symbol.includes('.') ? pos.symbol : `${pos.symbol}.SA`;
+      const q = await apiFetch(`/proxy/finnhub/quote?symbol=${fhSym}`);
+      if (q && q.c && !q._unavailable) {
+        const val = q.c * pos.quantity;
+        b3Total += val;
+        // Considera como "melhor ativo" se não tem portfólio manual
+        if (!bestAsset && q.dp !== undefined) {
+          if (q.dp > bestPct) {
+            bestPct = q.dp;
+            bestAsset = { name: pos.symbol, pair: pos.symbol };
+          }
+        }
+      }
+    } catch(e) {}
+  });
+
+  // Atualiza stats do portfólio manual imediatamente
   const pnl = total - cost, pnlPct = cost ? pnl / cost * 100 : 0;
-  document.getElementById('jp-total').textContent = assets.length ? 'R$ '+fmtNum(total) : 'R$ –';
-  document.getElementById('jp-total-var').style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
-  document.getElementById('jp-total-var').textContent = cost
-    ? `${pnl>=0?'▲ +':'▼ '}R$ ${fmtNum(Math.abs(pnl))} (${Math.abs(pnlPct).toFixed(1)}%)`
-    : 'Adicione ativos para ver';
+  const hasManual = assets.length > 0 && total > 0;
+  const hasB3 = b3Positions.length > 0;
+
+  if (hasManual || hasB3) {
+    document.getElementById('jp-total').textContent = 'R$ '+fmtNum(total + b3Total);
+    document.getElementById('jp-total-var').style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    if (hasManual && cost) {
+      document.getElementById('jp-total-var').textContent =
+        `${pnl>=0?'▲ +':'▼ '}R$ ${fmtNum(Math.abs(pnl))} (${Math.abs(pnlPct).toFixed(1)}%)`;
+    } else if (hasB3) {
+      document.getElementById('jp-total-var').style.color = 'var(--text3)';
+      document.getElementById('jp-total-var').textContent =
+        `Inclui ${b3Positions.length} posição(ões) da B3`;
+    }
+  } else {
+    document.getElementById('jp-total').textContent = 'R$ –';
+    document.getElementById('jp-total-var').style.color = 'var(--text3)';
+    document.getElementById('jp-total-var').textContent = 'Adicione ativos para ver';
+  }
+
+  // Atualiza total com B3 assim que os preços chegarem
+  if (hasB3) {
+    Promise.all(b3PricePromises).then(() => {
+      const grandTotal = total + b3Total;
+      document.getElementById('jp-total').textContent = 'R$ '+fmtNum(grandTotal);
+      const sub = hasManual && cost
+        ? `${pnl>=0?'▲ +':'▼ '}R$ ${fmtNum(Math.abs(pnl))} (${Math.abs(pnlPct).toFixed(1)}%)`
+        : `Inclui ${b3Positions.length} posição(ões) da B3`;
+      document.getElementById('jp-total-var').textContent = sub;
+
+      // Melhor ativo B3
+      if (!bestAsset) {
+        document.getElementById('jp-best').textContent = '–';
+        document.getElementById('jp-best-sub').textContent = 'Aguardando cotações';
+      }
+    });
+  }
 
   const gAmt = jornadaPortfolio.goal_amount || 0;
   document.getElementById('jp-goal').textContent = gAmt ? 'R$ '+fmtNum(gAmt) : '–';
@@ -3434,7 +3530,7 @@ function updateJornadaStats() {
     document.getElementById('jp-best').style.color = bestPct >= 0 ? 'var(--green)' : 'var(--red)';
   } else {
     document.getElementById('jp-best').textContent = '–';
-    document.getElementById('jp-best-sub').textContent = 'Sem ativos com cotação';
+    document.getElementById('jp-best-sub').textContent = hasB3 ? 'Carregando cotações B3…' : 'Sem ativos com cotação';
   }
 
   if (userProfile.since) {
